@@ -26,7 +26,20 @@ Multi-broker, multi-account trading: orders, positions, PnL, Slack notifications
    ```bash
    uvicorn main:app --host 0.0.0.0 --port 8001
    ```
-   Endpoints: `GET /trading/accounts`, `/trading/orders`, `/trading/positions`, `/trading/pnl`.
+   Endpoints: `GET /trading/accounts`, `/trading/orders`, `/trading/positions`, `/trading/pnl`, `/trading/execution-strategies`, `/trading/accounts/{id}/execution-strategies` (see [docs/TRADING_STRATEGIES_AND_PIPELINE.md](docs/TRADING_STRATEGIES_AND_PIPELINE.md)).
+
+   Apply migrations: `trading_schema.sql`, `trading_execution_strategies.sql`, and `trading_universe_sources_extend.sql`, or start the app once — `ensure_tables()` runs all three.
+
+## Admin / Config
+
+Similar to strategy-screener's Admin page. Use from the screener Admin (when `REACT_APP_TRADING_API_URL` is set) or call directly:
+
+- `GET /admin/data-status` — Overview: accounts, positions count, last sync, PnL snapshots, env config
+- `POST /admin/sync-positions` — Fetch positions from broker APIs (Flattrade etc.) and update DB
+- `POST /admin/sync-pnl` — Create today's PnL snapshot from positions
+- `GET /admin/jobs`, `GET /admin/job/{id}` — Job status (sync_positions, sync_pnl)
+
+Broker credentials: `TRADING_FLATTRADE_USER`, `TRADING_FLATTRADE_TOKEN` (or per-account `TRADING_FLATTRADE_<credentials_ref>_USER`).
 
 ## Strategy Screener integration
 

@@ -1,0 +1,109 @@
+# Scheduler config for trading pipeline
+# Cron format: minute hour day month day_of_week (0-6, 0=Sunday)
+# All times in Asia/Kolkata (IST)
+
+timezone: Asia/Kolkata
+
+jobs:
+  # --- DATA COLLECTION (via strategy-screener admin) ---
+  - id: ohlcv_stocks
+    name: OHLCV stocks refresh
+    type: http
+    service: screener
+    schedule: "0 13 * * 1-5"
+    url: /admin/update-ohlcv
+    method: POST
+
+  - id: commodity_ohlcv
+    name: Commodity OHLCV refresh
+    type: http
+    service: data_store
+    schedule: "30 13 * * 1-5"
+    url: /run/commodity-ohlcv
+    method: POST
+
+  - id: enrich_sectors
+    name: Market cap / sector enrichment
+    type: http
+    service: screener
+    schedule: "30 4 * * 0"
+    url: /admin/enrich-sectors
+    method: POST
+
+  - id: scrape_latest_results
+    name: NSE latest results scrape
+    type: http
+    service: screener
+    schedule: "30 14 * * 1-5"
+    url: /admin/scrape-latest-results?days=1
+    method: POST
+
+  - id: scrape_screener_latest
+    name: Screener.in latest results
+    type: http
+    service: screener
+    schedule: "0 2 * * *"
+    url: /admin/scrape-screener-latest
+    method: POST
+
+  - id: scrape_financials
+    name: Full financials scrape (batch)
+    type: http
+    service: data_store
+    schedule: "30 20 * * 5"
+    url: /run/scrape-financials?limit=200&sleep=1.5
+    method: POST
+
+  # --- SCREENING & AI ---
+  - id: daily_ai_report
+    name: Daily AI screener report
+    type: http
+    service: screener
+    schedule: "30 2 * * *"
+    url: /admin/daily-ai-report
+    method: POST
+
+  - id: daily_ai_report_5pm
+    name: Daily AI report (5 PM)
+    type: http
+    service: screener
+    schedule: "30 11 * * *"
+    url: /admin/daily-ai-report
+    method: POST
+
+  # --- TRADING ---
+  # Entry-universe snapshot (symbol counts + resolver meta; no symbol list by default).
+  # Wire trading-service env: STRATEGY_SCREENER_URL, MARKET_DATABASE_URL if using screens/full universe.
+  - id: universe_resolve_all
+    name: Resolve all execution-strategy universes
+    type: http
+    service: trading
+    schedule: "20 9 * * 1-5"
+    url: /trading/universe/resolve-all?include_symbols=false
+    method: GET
+
+  # Entry consumer tick: enabled strategies × universe minus positions (no orders). Re-runs each trigger;
+  # does not stay running until positions close—state is always re-read from DB.
+  - id: entry_candidate_scan
+    name: Entry candidate scan (enabled strategies)
+    type: http
+    service: trading
+    schedule: "25 9 * * 1-5"
+    url: /admin/entry-candidate-scan
+    method: POST
+
+  - id: sync_positions
+    name: Sync positions from brokers
+    type: http
+    service: trading
+    schedule: "*/5 9-15 * * 1-5"
+    url: /admin/sync-positions
+    method: POST
+
+  - id: sync_pnl
+    name: Sync PnL snapshots
+    type: http
+    service: trading
+    schedule: "0 10 * * 1-5"
+    url: /admin/sync-pnl
+    method: POST

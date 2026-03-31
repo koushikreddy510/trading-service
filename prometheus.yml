@@ -1,0 +1,8 @@
+# Prometheus config: scrape trading-service metrics
+# Run: docker compose -f docker-compose.monitoring.yml up -d
+scrape_configs:
+  - job_name: "trading-service"
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["host.docker.internal:8001"]
+    # If running in same docker network, use: targets: ["trading-service:8001"]

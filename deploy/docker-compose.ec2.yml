@@ -1,0 +1,116 @@
+# Trading pipeline - single EC2 / cloud VM deployment
+# Run from trading-service root: docker compose -f deploy/docker-compose.ec2.yml up -d
+# Ensure deploy/.env exists (copy from deploy/env.example)
+#
+# Layout: clone data-store, strategy-screener, trading-service as siblings:
+#   parent/
+#     data-store/
+#     strategy-screener/
+#     trading-service/
+#
+# Build: docker compose -f deploy/docker-compose.ec2.yml build
+# Up:    docker compose -f deploy/docker-compose.ec2.yml up -d
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: trading-pipeline-postgres
+    environment:
+      POSTGRES_USER: ${PGUSER:-market_user}
+      POSTGRES_PASSWORD: ${PGPASSWORD:?Set PGPASSWORD}
+      POSTGRES_DB: market
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-market_user} -d market"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Data-store: scripts + HTTP runner for scheduler
+  data-store:
+    build:
+      context: ../../data-store
+      dockerfile: Dockerfile
+    container_name: trading-pipeline-data-store
+    environment:
+      DATABASE_URL: postgresql://${PGUSER:-market_user}:${PGPASSWORD}@postgres:5432/market
+      FYERS_CLIENT_ID: ${FYERS_CLIENT_ID:-}
+      FYERS_ACCESS_TOKEN: ${FYERS_ACCESS_TOKEN:-}
+    volumes:
+      # Token file (create on host: echo "your_token" > fyers_access_token.txt)
+      - ../../data-store/fyers_access_token.txt:/app/fyers_access_token.txt:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # No ports exposed - internal only for scheduler
+
+  # Strategy screener (screening, AI report, admin endpoints)
+  strategy-screener:
+    build:
+      context: ../../strategy-screener
+      dockerfile: Dockerfile
+    container_name: trading-pipeline-screener
+    environment:
+      DATABASE_URL: postgresql://${PGUSER:-market_user}:${PGPASSWORD}@postgres:5432/market
+      DATA_STORE_DIR: /app/data-store
+      FYERS_CLIENT_ID: ${FYERS_CLIENT_ID:-}
+      FYERS_SECRET_KEY: ${FYERS_SECRET_KEY:-}
+      FYERS_TOKEN_FILE: /app/data-store/fyers_access_token.txt
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+    volumes:
+      - ../../data-store:/app/data-store:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Trading service (accounts, orders, positions, PnL)
+  trading-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: trading-pipeline-trading
+    environment:
+      DATABASE_URL: postgresql://${PGUSER:-market_user}:${PGPASSWORD}@postgres:5432/trading
+      STRATEGY_SCREENER_URL: http://strategy-screener:8000
+      MARKET_DATABASE_URL: postgresql://${PGUSER:-market_user}:${PGPASSWORD}@postgres:5432/market
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      TRADING_SLACK_WEBHOOK_URL: ${TRADING_SLACK_WEBHOOK_URL:-}
+      TRADING_FLATTRADE_USER: ${TRADING_FLATTRADE_USER:-}
+      TRADING_FLATTRADE_TOKEN: ${TRADING_FLATTRADE_TOKEN:-}
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      strategy-screener:
+        condition: service_started
+
+  # Central scheduler - replaces all cron jobs
+  scheduler:
+    build:
+      context: ../scheduler
+      dockerfile: Dockerfile
+    container_name: trading-pipeline-scheduler
+    environment:
+      SCHEDULER_CONFIG: /app/schedules.yaml
+      SCREENER_URL: http://strategy-screener:8000
+      TRADING_URL: http://trading-service:8001
+      DATA_STORE_URL: http://data-store:8003
+    volumes:
+      - ../scheduler/schedules.yaml:/app/schedules.yaml:ro
+    ports:
+      - "8002:8002"
+    depends_on:
+      - strategy-screener
+      - trading-service
+      - data-store
+
+volumes:
+  postgres_data:
