@@ -9,7 +9,7 @@ from datetime import date
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -342,6 +342,13 @@ class BacktestReplayBody(BaseModel):
     strategies: Optional[List[StrategyLaneSpec]] = None
     sizing_mode: Optional[str] = None
     sizing_value: float = 0.0
+    compare_catalog_strategies: bool = False
+    catalog_include_inactive: bool = False
+    capital_per_lane: Literal["split", "isolated"] = "split"
+    daily_universe_by_strategy: Optional[Dict[str, Dict[str, List[str]]]] = None
+    financial_filters: Optional[Dict[str, Any]] = None
+    stop_loss_pct: float = 0.0
+    exit_rules: Optional[Dict[str, Any]] = None
 
 
 @app.post("/admin/backtest-replay")
@@ -349,7 +356,11 @@ def admin_backtest_replay(body: BacktestReplayBody):
     """
     Dry-run on ohlcv_1d. Universes: explicit list, all_eq (cap), sector, and/or daily_universe (screener export).
     Modes: buy_and_hold, sequential_entries, daily_screen_rebalance (full turnover to that day's list).
-    Response: timeline_compact (every day PnL), activity_days (entries/exits only), combined_* for multi-lane.
+    Response: timeline_compact (every day PnL), activity_days (entries/exits only), combined_* for multi-lane,
+    comparison_leaderboard (sorted by pnl_pct) when multiple strategies complete.
+    Set compare_catalog_strategies=true to run one lane per trading_execution_strategies row (same mode/sizing for all).
+    capital_per_lane=split → one initial_cash pot divided across lanes; isolated → each lane gets full initial_cash.
+    sizing_mode fixed_inr / fixed_qty / equal_weight / percent_equity applies uniformly (see backtest_replay).
     Set include_full_timeline=false for lighter JSON on large runs.
     """
     try:
@@ -376,6 +387,13 @@ def admin_backtest_replay(body: BacktestReplayBody):
             strategies=strat,
             sizing_mode=body.sizing_mode,
             sizing_value=body.sizing_value,
+            compare_catalog_strategies=body.compare_catalog_strategies,
+            catalog_include_inactive=body.catalog_include_inactive,
+            capital_per_lane=body.capital_per_lane,
+            daily_universe_by_strategy=body.daily_universe_by_strategy,
+            financial_filters=body.financial_filters,
+            stop_loss_pct=body.stop_loss_pct,
+            exit_rules=body.exit_rules,
         )
         if out.get("error"):
             raise HTTPException(status_code=400, detail=out["error"])
