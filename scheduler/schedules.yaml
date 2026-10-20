@@ -54,6 +54,49 @@ jobs:
     url: /run/scrape-financials?limit=200&sleep=1.5
     method: POST
 
+  # --- BROKER LOGINS (before the 09:15 open) ---
+  # Fyers logs in by itself (PIN + TOTP). Flattrade and Paytm Money need a person: the check tells Slack which.
+  - id: fyers_token_refresh
+    name: Fyers token refresh
+    type: http
+    service: screener
+    schedule: "0 8 * * 1-5"
+    url: /admin/fyers-token/generate
+    method: POST
+
+  - id: broker_tokens_check
+    name: Broker token check (Slack if a login is needed)
+    type: http
+    service: trading
+    schedule: "15 8 * * 1-5"
+    url: /terminal/notify/broker-tokens
+    method: POST
+
+  # --- TERMINAL (screener scan, linked watchlists, Slack data digest) ---
+  - id: terminal_screener_scan
+    name: Terminal screener scan
+    type: http
+    service: trading
+    schedule: "15 16 * * 1-5"
+    url: /terminal/screener/scan
+    method: POST
+
+  - id: terminal_screener_sync
+    name: Terminal screener -> watchlist sync
+    type: http
+    service: trading
+    schedule: "30 16 * * 1-5"
+    url: /terminal/screener-sync/refresh
+    method: POST
+
+  - id: terminal_data_digest
+    name: Daily data digest (Slack)
+    type: http
+    service: trading
+    schedule: "0 21 * * 1-5"
+    url: /terminal/notify/data-digest
+    method: POST
+
   # --- SCREENING & AI ---
   - id: daily_ai_report
     name: Daily AI screener report

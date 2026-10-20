@@ -1,0 +1,30 @@
+# Copy into each repo as .github/workflows/deploy.yml and set SERVICE for that repo:
+#   trade -> web          trading-service -> trading          strategy-screener -> screener
+#   data-store -> data-store          (any repo, run by hand -> all)
+# A push to main then rebuilds only that repo's containers on the VM.
+#
+# Repo secrets: DEPLOY_HOST (server IP or name), DEPLOY_SSH_KEY (private key of the deploy user).
+# The strategy-screener repo's existing deploy.yml (systemd + nginx on the old server) is a different target; replace it when you cut over.
+name: Deploy
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "web | trading | screener | data-store | all"
+        default: ""
+concurrency: deploy            # two deploys never run at once
+env:
+  SERVICE: trading             # <- change per repo
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ubuntu
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script_stop: true
+          script: /opt/trading-pipeline/trading-service/deploy/deploy.sh ${{ inputs.service || env.SERVICE }}

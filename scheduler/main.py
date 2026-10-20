@@ -3,13 +3,16 @@ Central scheduler for trading pipeline.
 Runs all cron-like jobs via HTTP (screener, trading-service) or subprocess (data-store).
 Uses APScheduler with YAML config. Designed for single-EC2 Docker deployment.
 """
+import json
 import os
 import logging
 import subprocess
+import time
 from contextlib import asynccontextmanager
 
 import requests
 import yaml
+from apscheduler.events import EVENT_JOB_MISSED
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
@@ -29,6 +32,45 @@ DATA_STORE_URL = os.getenv("DATA_STORE_URL", "http://data-store:8003")
 DATA_STORE_DIR = os.getenv("DATA_STORE_DIR", "/app/data-store")
 HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", "600"))  # 10 min for long jobs
 JOB_LOG = {}  # in-memory job log (last run per job_id)
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL") or os.getenv("TRADING_SLACK_WEBHOOK_URL")
+SLACK_JOBS_NOTIFY = os.getenv("SLACK_JOBS_NOTIFY", "all").lower()  # all | failures | off
+
+
+def _slack(text: str) -> None:
+    """Best effort: a Slack outage must never affect a job."""
+    if not SLACK_WEBHOOK_URL:
+        return
+    try:
+        requests.post(SLACK_WEBHOOK_URL, json={"text": text}, timeout=5)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Slack notification failed: {e}")
+
+
+def _brief(text: str, limit: int = 400) -> str:
+    """A response body as one short line (compact JSON when it is JSON)."""
+    try:
+        text = json.dumps(json.loads(text), separators=(",", ":"), ensure_ascii=False)
+    except ValueError:
+        text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _report(job_id: str, started: float) -> None:
+    """Record how long the job took and tell Slack how it went (what it returned, or why it failed)."""
+    entry = JOB_LOG[job_id]
+    entry["seconds"] = round(time.monotonic() - started, 1)
+    ok = entry["status"] == "ok"
+    if SLACK_JOBS_NOTIFY == "off" or (ok and SLACK_JOBS_NOTIFY == "failures"):
+        return
+    job = scheduler.get_job(job_id)
+    detail = entry.get("result") if ok else (entry.get("error") or entry.get("stderr") or f"exit {entry.get('returncode')}")
+    _slack(f"{'✅' if ok else '❌'} *{job.name if job else job_id}* (`{job_id}`) {'finished' if ok else 'FAILED'} in {entry['seconds']}s"
+           + (f"\n```{detail}```" if detail else ""))
+
+
+def _on_missed(event) -> None:
+    job = scheduler.get_job(event.job_id)
+    _slack(f"⏰ *{job.name if job else event.job_id}* (`{event.job_id}`) did not run at its scheduled time ({event.scheduled_run_time:%Y-%m-%d %H:%M}).")
 
 
 def _load_config() -> dict:
@@ -41,23 +83,27 @@ def _load_config() -> dict:
 
 def _run_http_job(job_id: str, url: str, method: str = "POST"):
     """Trigger an HTTP endpoint. Log result."""
+    started = time.monotonic()
     try:
         fn = requests.post if method.upper() == "POST" else requests.get
         r = fn(url, timeout=HTTP_TIMEOUT)
         r.raise_for_status()
-        JOB_LOG[job_id] = {"status": "ok", "status_code": r.status_code}
+        JOB_LOG[job_id] = {"status": "ok", "status_code": r.status_code, "result": _brief(r.text)}
         logger.info(f"Job {job_id} OK: {url}")
     except Exception as e:
         JOB_LOG[job_id] = {"status": "error", "error": str(e)}
         logger.error(f"Job {job_id} failed: {e}")
+    _report(job_id, started)
 
 
 def _run_subprocess_job(job_id: str, cmd: list, cwd: str = None):
     """Run a subprocess (e.g. data-store script). Log result."""
     cwd = cwd or DATA_STORE_DIR
+    started = time.monotonic()
     if not os.path.isdir(cwd):
         JOB_LOG[job_id] = {"status": "error", "error": f"Directory not found: {cwd}"}
         logger.error(f"Job {job_id}: DATA_STORE_DIR not found")
+        _report(job_id, started)
         return
     try:
         result = subprocess.run(
@@ -69,7 +115,7 @@ def _run_subprocess_job(job_id: str, cmd: list, cwd: str = None):
             env=os.environ.copy(),
         )
         if result.returncode == 0:
-            JOB_LOG[job_id] = {"status": "ok", "returncode": 0}
+            JOB_LOG[job_id] = {"status": "ok", "returncode": 0, "result": _brief((result.stdout or "")[-400:])}
             logger.info(f"Job {job_id} OK: {' '.join(cmd)}")
         else:
             JOB_LOG[job_id] = {
@@ -84,6 +130,7 @@ def _run_subprocess_job(job_id: str, cmd: list, cwd: str = None):
     except Exception as e:
         JOB_LOG[job_id] = {"status": "error", "error": str(e)}
         logger.error(f"Job {job_id} failed: {e}")
+    _report(job_id, started)
 
 
 scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
@@ -166,8 +213,10 @@ def _register_jobs(config: dict):
 async def lifespan(app: FastAPI):
     config = _load_config()
     _register_jobs(config)
+    scheduler.add_listener(_on_missed, EVENT_JOB_MISSED)
     scheduler.start()
     logger.info("Scheduler started")
+    _slack(f"🟢 *Scheduler started* with {len(scheduler.get_jobs())} jobs.")
     yield
     scheduler.shutdown(wait=False)
     logger.info("Scheduler stopped")

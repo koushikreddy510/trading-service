@@ -5,8 +5,17 @@ import os
 import requests
 from typing import Optional
 
-def send_slack(text: str, webhook_url: Optional[str] = None) -> bool:
-    url = webhook_url or os.getenv("SLACK_WEBHOOK_URL") or os.getenv("TRADING_SLACK_WEBHOOK_URL")
+def webhook_for(account: str = "default") -> Optional[str]:
+    """The webhook for an account: SLACK_WEBHOOK_URL_<ACCOUNT> if set, else the shared one."""
+    if account and account != "default":
+        specific = os.getenv(f"SLACK_WEBHOOK_URL_{account.upper()}")
+        if specific:
+            return specific
+    return os.getenv("SLACK_WEBHOOK_URL") or os.getenv("TRADING_SLACK_WEBHOOK_URL")
+
+
+def send_slack(text: str, webhook_url: Optional[str] = None, account: str = "default") -> bool:
+    url = webhook_url or webhook_for(account)
     if not url:
         return False
     try:

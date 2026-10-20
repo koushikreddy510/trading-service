@@ -21,10 +21,17 @@ async def lifespan(app: FastAPI):
         ensure_tables()
     except Exception:
         pass  # Tables may already exist or DATABASE_URL not set yet
-    yield
+    # Chart terminal (watchlists, live candles, rules, paper positions). If it cannot
+    # start, the rest of this service is unaffected and /terminal answers 503.
+    from trading_service.terminal.api import terminal_lifespan
+    async with terminal_lifespan(app):
+        yield
 
 
 app = FastAPI(title="Trading Service", version="1.0", lifespan=lifespan)
+
+from trading_service.terminal.api import mount as mount_terminal
+mount_terminal(app)
 
 app.add_middleware(
     CORSMiddleware,

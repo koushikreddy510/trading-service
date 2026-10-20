@@ -1,0 +1,16 @@
+# Env comes from docker-compose (web service). The Workspace has no login of its own yet, and its Data
+# screen can start scrapes, so everything sits behind one shared password.
+{$SITE_ADDRESS::80} {
+	encode gzip
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+	}
+	handle /terminal/* {
+		reverse_proxy trading-service:8001
+	}
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

@@ -1,116 +1,132 @@
-# Trading pipeline - single EC2 / cloud VM deployment
-# Run from trading-service root: docker compose -f deploy/docker-compose.ec2.yml up -d
-# Ensure deploy/.env exists (copy from deploy/env.example)
+# The whole pipeline on ONE VM. Run through deploy.sh (it passes the right flags); see README.md.
 #
-# Layout: clone data-store, strategy-screener, trading-service as siblings:
-#   parent/
-#     data-store/
-#     strategy-screener/
-#     trading-service/
+# Layout on the VM (deploy.sh init creates it):
+#   /opt/trading-pipeline/{data-store,strategy-screener,trading-service,trade}
 #
-# Build: docker compose -f deploy/docker-compose.ec2.yml build
-# Up:    docker compose -f deploy/docker-compose.ec2.yml up -d
+# Only `web` is public (80/443). Everything else listens on 127.0.0.1 for ssh-tunnel debugging.
+
+x-restart: &restart
+  restart: unless-stopped
+
+# One database for everything, as in run_local_stack.sh. psycopg2 is named explicitly
+# because an unpinned SQLAlchemy 2.1 would otherwise default "postgresql://" to psycopg3.
+x-market-db: &market-db postgresql+psycopg2://${PGUSER:-market_user}:${PGPASSWORD}@postgres:5432/market
 
 services:
   postgres:
-    image: postgres:15-alpine
-    container_name: trading-pipeline-postgres
+    <<: *restart
+    image: postgres:16-alpine
     environment:
       POSTGRES_USER: ${PGUSER:-market_user}
-      POSTGRES_PASSWORD: ${PGPASSWORD:?Set PGPASSWORD}
+      POSTGRES_PASSWORD: ${PGPASSWORD:?Set PGPASSWORD in deploy/.env}
       POSTGRES_DB: market
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-market_user} -d market"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
-  # Data-store: scripts + HTTP runner for scheduler
+  # Scrapers + the small HTTP runner the scheduler and the Data screen trigger
   data-store:
-    build:
-      context: ../../data-store
-      dockerfile: Dockerfile
-    container_name: trading-pipeline-data-store
+    <<: *restart
+    build: { context: ../../data-store }
     environment:
       DATABASE_URL: postgresql://${PGUSER:-market_user}:${PGPASSWORD}@postgres:5432/market
       FYERS_CLIENT_ID: ${FYERS_CLIENT_ID:-}
       FYERS_ACCESS_TOKEN: ${FYERS_ACCESS_TOKEN:-}
     volumes:
-      # Token file (create on host: echo "your_token" > fyers_access_token.txt)
       - ../../data-store/fyers_access_token.txt:/app/fyers_access_token.txt:ro
+    ports:
+      - "127.0.0.1:8003:8003"
     depends_on:
-      postgres:
-        condition: service_healthy
-    # No ports exposed - internal only for scheduler
+      postgres: { condition: service_healthy }
 
-  # Strategy screener (screening, AI report, admin endpoints)
+  # Strategy screener: strategies, universes, and the /admin job endpoints the Data screen drives
   strategy-screener:
-    build:
-      context: ../../strategy-screener
-      dockerfile: Dockerfile
-    container_name: trading-pipeline-screener
+    <<: *restart
+    build: { context: ../../strategy-screener }
     environment:
       DATABASE_URL: postgresql://${PGUSER:-market_user}:${PGPASSWORD}@postgres:5432/market
       DATA_STORE_DIR: /app/data-store
       FYERS_CLIENT_ID: ${FYERS_CLIENT_ID:-}
       FYERS_SECRET_KEY: ${FYERS_SECRET_KEY:-}
       FYERS_TOKEN_FILE: /app/data-store/fyers_access_token.txt
+      FYERS_USERNAME: ${FYERS_USERNAME:-}              # with PIN + TOTP key: the screener logs in to Fyers by itself every morning
+      FYERS_PIN: ${FYERS_PIN:-}
+      FYERS_TOTP_KEY: ${FYERS_TOTP_KEY:-}
+      FYERS_REDIRECT_URI: ${FYERS_REDIRECT_URI:-https://www.google.com/}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
     volumes:
-      - ../../data-store:/app/data-store:ro
+      - ../../data-store:/app/data-store
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres: { condition: service_healthy }
 
-  # Trading service (accounts, orders, positions, PnL)
+  # Trading service = the old accounts/orders API + the /terminal API and websocket the Workspace uses
   trading-service:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    container_name: trading-pipeline-trading
+    <<: *restart
+    build: { context: .. }
     environment:
-      DATABASE_URL: postgresql://${PGUSER:-market_user}:${PGPASSWORD}@postgres:5432/trading
+      DATABASE_URL: *market-db
+      MARKET_DATABASE_URL: *market-db
       STRATEGY_SCREENER_URL: http://strategy-screener:8000
-      MARKET_DATABASE_URL: postgresql://${PGUSER:-market_user}:${PGPASSWORD}@postgres:5432/market
+      TERMINAL_MODE: ${TERMINAL_MODE:-demo}            # demo = synthetic prices; flattrade = real feed
+      FLATTRADE_USER_ID: ${FLATTRADE_USER_ID:-}
+      FLATTRADE_ACCOUNT_ID: ${FLATTRADE_ACCOUNT_ID:-}
+      FLATTRADE_TOKEN: ${FLATTRADE_TOKEN:-}            # today's session token; it expires daily (python -m broker_auth)
+      PAYTM_ACCESS_TOKEN: ${PAYTM_ACCESS_TOKEN:-}
+      PAYTM_READ_ACCESS_TOKEN: ${PAYTM_READ_ACCESS_TOKEN:-}
+      PAYTM_PUBLIC_ACCESS_TOKEN: ${PAYTM_PUBLIC_ACCESS_TOKEN:-}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
       TRADING_SLACK_WEBHOOK_URL: ${TRADING_SLACK_WEBHOOK_URL:-}
       TRADING_FLATTRADE_USER: ${TRADING_FLATTRADE_USER:-}
       TRADING_FLATTRADE_TOKEN: ${TRADING_FLATTRADE_TOKEN:-}
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     depends_on:
-      postgres:
-        condition: service_healthy
-      strategy-screener:
-        condition: service_started
+      postgres: { condition: service_healthy }
+      strategy-screener: { condition: service_started }
 
-  # Central scheduler - replaces all cron jobs
+  # Cron replacement: every scheduled job is an HTTP call to the services above
   scheduler:
-    build:
-      context: ../scheduler
-      dockerfile: Dockerfile
-    container_name: trading-pipeline-scheduler
+    <<: *restart
+    build: { context: ../scheduler }
     environment:
       SCHEDULER_CONFIG: /app/schedules.yaml
       SCREENER_URL: http://strategy-screener:8000
       TRADING_URL: http://trading-service:8001
       DATA_STORE_URL: http://data-store:8003
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
     volumes:
       - ../scheduler/schedules.yaml:/app/schedules.yaml:ro
     ports:
-      - "8002:8002"
-    depends_on:
-      - strategy-screener
-      - trading-service
-      - data-store
+      - "127.0.0.1:8002:8002"
+    depends_on: [strategy-screener, trading-service, data-store]
+
+  # The Workspace (React, built to static files) behind Caddy, which also proxies /terminal and its websocket.
+  web:
+    <<: *restart
+    build:
+      context: ../../trade/web
+      dockerfile: ../../trading-service/deploy/web.Dockerfile
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}               # ":80" = plain http on the IP; a domain name = automatic https
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:-admin}
+      BASIC_AUTH_HASH: ${BASIC_AUTH_HASH:?Run deploy.sh init}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on: [trading-service]
 
 volumes:
   postgres_data:
+  caddy_data:
