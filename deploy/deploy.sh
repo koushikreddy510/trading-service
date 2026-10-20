@@ -33,7 +33,8 @@ pull() {  # fast-forward only: a diverged or dirty checkout stops the deploy ins
 migrate() {  # same files the old deploy workflow applied; most are IF NOT EXISTS, so errors on re-run are expected and ignored
   echo "== schemas"
   for f in data-store/schema.sql data-store/ohlc.sql data-store/enrich_symbols.sql data-store/financials_schema.sql \
-           strategy-screener/migrations/add_financials_source.sql data-store/commodity_schema.sql; do
+           strategy-screener/migrations/add_financials_source.sql data-store/commodity_schema.sql \
+           data-store/results_schema.sql; do
     [ -f "$ROOT/$f" ] || { echo "  missing $f"; continue; }
     dc exec -T postgres sh -c 'psql -q -U "$POSTGRES_USER" -d market' < "$ROOT/$f" >/dev/null 2>&1 || true
     echo "  applied $f"

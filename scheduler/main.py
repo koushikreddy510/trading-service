@@ -3,13 +3,16 @@ Central scheduler for trading pipeline.
 Runs all cron-like jobs via HTTP (screener, trading-service) or subprocess (data-store).
 Uses APScheduler with YAML config. Designed for single-EC2 Docker deployment.
 """
+import html
 import json
 import os
 import logging
+import sqlite3
 import subprocess
 import time
 import zoneinfo
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
+from datetime import datetime, timedelta
 
 import requests
 import yaml
@@ -17,7 +20,7 @@ from apscheduler.events import EVENT_JOB_MISSED
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,6 +38,8 @@ HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", "600"))  # 10 min for long jobs
 JOB_LOG = {}  # in-memory job log (last run per job_id)
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL") or os.getenv("TRADING_SLACK_WEBHOOK_URL")
 SLACK_JOBS_NOTIFY = os.getenv("SLACK_JOBS_NOTIFY", "all").lower()  # all | failures | off
+RUNS_DB = os.getenv("JOB_RUNS_DB", "/data/job_runs.db")  # run history; a docker volume keeps it across restarts and deploys
+RUNS_KEEP = 2000                                         # newest rows kept; older ones are deleted on write
 
 
 def _slack(text: str) -> None:
@@ -56,15 +61,49 @@ def _brief(text: str, limit: int = 400) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _runs_db():
+    os.makedirs(os.path.dirname(RUNS_DB) or ".", exist_ok=True)
+    con = sqlite3.connect(RUNS_DB, timeout=5)
+    con.row_factory = sqlite3.Row
+    con.execute("CREATE TABLE IF NOT EXISTS job_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, name TEXT, "
+                "started_at TEXT NOT NULL, seconds REAL, status TEXT NOT NULL, detail TEXT)")
+    return con
+
+
+def _record_run(job_id: str, name: str, entry: dict, detail) -> None:
+    """Keep the run for the history views. Best effort: a full disk or missing volume must never affect a job."""
+    try:
+        started = datetime.now(zoneinfo.ZoneInfo("Asia/Kolkata")) - timedelta(seconds=entry.get("seconds") or 0)
+        with closing(_runs_db()) as con, con:
+            con.execute("INSERT INTO job_runs (job_id, name, started_at, seconds, status, detail) VALUES (?, ?, ?, ?, ?, ?)",
+                        (job_id, name, started.isoformat(timespec="seconds"), entry.get("seconds"), entry["status"], _brief(str(detail or ""), 400)))
+            con.execute("DELETE FROM job_runs WHERE id <= (SELECT max(id) FROM job_runs) - ?", (RUNS_KEEP,))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not record run of {job_id}: {e}")
+
+
+def _runs(job_id: str = None, limit: int = 50) -> list[dict]:
+    try:
+        with closing(_runs_db()) as con:
+            sql, args = "SELECT job_id, name, started_at, seconds, status, detail FROM job_runs", []
+            if job_id:
+                sql, args = sql + " WHERE job_id = ?", [job_id]
+            return [dict(r) for r in con.execute(sql + " ORDER BY id DESC LIMIT ?", [*args, max(1, min(limit, 500))])]
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not read run history: {e}")
+        return []
+
+
 def _report(job_id: str, started: float) -> None:
     """Record how long the job took and tell Slack how it went (what it returned, or why it failed)."""
     entry = JOB_LOG[job_id]
     entry["seconds"] = round(time.monotonic() - started, 1)
     ok = entry["status"] == "ok"
-    if SLACK_JOBS_NOTIFY == "off" or (ok and SLACK_JOBS_NOTIFY == "failures"):
-        return
     job = scheduler.get_job(job_id)
     detail = entry.get("result") if ok else (entry.get("error") or entry.get("stderr") or f"exit {entry.get('returncode')}")
+    _record_run(job_id, job.name if job else job_id, entry, detail)
+    if SLACK_JOBS_NOTIFY == "off" or (ok and SLACK_JOBS_NOTIFY == "failures"):
+        return
     _slack(f"{'✅' if ok else '❌'} *{job.name if job else job_id}* (`{job_id}`) {'finished' if ok else 'FAILED'} in {entry['seconds']}s"
            + (f"\n```{detail}```" if detail else ""))
 
@@ -233,6 +272,9 @@ def health():
 
 @app.get("/jobs")
 def list_jobs():
+    last = {}
+    for r in reversed(_runs(limit=500)):          # oldest first, so the newest run of each job wins
+        last[r["job_id"]] = r
     jobs = []
     for j in scheduler.get_jobs():
         jobs.append({
@@ -240,8 +282,37 @@ def list_jobs():
             "name": j.name,
             "next_run": j.next_run_time.isoformat() if j.next_run_time else None,
             "trigger": str(j.trigger),
+            "last_run": last.get(j.id),
         })
     return {"jobs": jobs}
+
+
+@app.get("/runs")
+def list_runs(job: str = None, limit: int = 50):
+    """Run history, newest first (kept across restarts)."""
+    return {"runs": _runs(job, limit)}
+
+
+@app.get("/ui", response_class=HTMLResponse)
+def ui():
+    """One page: every job with its next run and last result, then the latest runs."""
+    e = lambda v: html.escape("" if v is None else str(v))  # noqa: E731
+    jobs = sorted(list_jobs()["jobs"], key=lambda j: j["next_run"] or "9")
+    rows = "".join(
+        f"<tr><td>{e(j['name'])}<br><small>{e(j['id'])}</small></td><td>{e((j['next_run'] or '-').replace('T', ' ')[:16])}</td>"
+        f"<td class='{e(j['last_run']['status']) if j['last_run'] else ''}'>{e(j['last_run']['status']) if j['last_run'] else 'never run'}</td>"
+        f"<td>{e(j['last_run']['started_at'].replace('T', ' ')) if j['last_run'] else ''}</td>"
+        f"<td>{e(j['last_run']['seconds']) if j['last_run'] else ''}</td></tr>" for j in jobs)
+    hist = "".join(
+        f"<tr><td>{e(r['started_at'].replace('T', ' '))}</td><td>{e(r['name'])}</td><td class='{e(r['status'])}'>{e(r['status'])}</td>"
+        f"<td>{e(r['seconds'])}</td><td><small>{e(r['detail'])}</small></td></tr>" for r in _runs(limit=50))
+    return (
+        "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Scheduler</title>"
+        "<style>body{font:14px system-ui;margin:16px;max-width:1000px}table{border-collapse:collapse;width:100%;margin-bottom:24px}"
+        "td,th{border-bottom:1px solid #8884;padding:6px 8px;text-align:left;vertical-align:top}.ok{color:#18a058}.error{color:#d03050;font-weight:600}</style>"
+        "<h2>Scheduled jobs (IST)</h2><table><tr><th>Job<th>Next run<th>Last status<th>Last started<th>Seconds</tr>" + rows + "</table>"
+        "<h2>Recent runs</h2><table><tr><th>Started<th>Job<th>Status<th>Seconds<th>Result</tr>" + hist + "</table>"
+    )
 
 
 @app.get("/jobs/{job_id}/log")
