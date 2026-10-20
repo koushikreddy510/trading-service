@@ -243,6 +243,8 @@ SECTOR_GROUP_MAP = {
 # so these map the ~70 Yahoo industry strings to the 11 Yahoo sector names used as parent groups.
 _YAHOO_INDUSTRY_MAP: dict[str, str] = {
     # Financial Services
+    "Banks - Regional": "Financial Services",
+    "Banks - Diversified": "Financial Services",
     "Banks—Regional": "Financial Services",
     "Banks—Diversified": "Financial Services",
     "Asset Management": "Financial Services",
@@ -250,6 +252,10 @@ _YAHOO_INDUSTRY_MAP: dict[str, str] = {
     "Credit Services": "Financial Services",
     "Financial Data & Stock Exchanges": "Financial Services",
     "Financial Conglomerates": "Financial Services",
+    "Insurance - Life": "Financial Services",
+    "Insurance - Diversified": "Financial Services",
+    "Insurance - Property & Casualty": "Financial Services",
+    "Insurance - Specialty": "Financial Services",
     "Insurance—Life": "Financial Services",
     "Insurance—Diversified": "Financial Services",
     "Insurance—Property & Casualty": "Financial Services",
@@ -259,6 +265,8 @@ _YAHOO_INDUSTRY_MAP: dict[str, str] = {
     "Shell Companies": "Financial Services",
 
     # Technology
+    "Software - Application": "Technology",
+    "Software - Infrastructure": "Technology",
     "Software—Application": "Technology",
     "Software—Infrastructure": "Technology",
     "Information Technology Services": "Technology",
@@ -269,12 +277,16 @@ _YAHOO_INDUSTRY_MAP: dict[str, str] = {
     "Electronic Components": "Technology",
     "Electronics & Computer Distribution": "Technology",
     "Scientific & Technical Instruments": "Technology",
+    "Communication Equipment": "Technology",
 
     # Healthcare
+    "Drug Manufacturers - General": "Healthcare",
+    "Drug Manufacturers - Specialty & Generic": "Healthcare",
     "Drug Manufacturers—General": "Healthcare",
     "Drug Manufacturers—Specialty & Generic": "Healthcare",
     "Biotechnology": "Healthcare",
     "Medical Devices": "Healthcare",
+    "Medical Instruments & Supplies": "Healthcare",
     "Medical Care Facilities": "Healthcare",
     "Diagnostics & Research": "Healthcare",
     "Health Information Services": "Healthcare",
@@ -302,19 +314,26 @@ _YAHOO_INDUSTRY_MAP: dict[str, str] = {
     "Residential Construction": "Consumer Cyclical",
     "Internet Retail": "Consumer Cyclical",
     "Electronic Gaming & Multimedia": "Consumer Cyclical",
+    "Furnishings, Fixtures & Appliances": "Consumer Cyclical",
+    "Rental & Leasing Services": "Consumer Cyclical",
 
     # Consumer Defensive
     "Packaged Foods": "Consumer Defensive",
     "Personal Products": "Consumer Defensive",
+    "Household & Personal Products": "Consumer Defensive",
+    "Beverages - Non-Alcoholic": "Consumer Defensive",
+    "Beverages - Alcoholic": "Consumer Defensive",
+    "Beverages - Wineries & Distilleries": "Consumer Defensive",
     "Beverages—Non-Alcoholic": "Consumer Defensive",
     "Beverages—Alcoholic": "Consumer Defensive",
     "Agricultural Farm Products": "Consumer Defensive",
+    "Farm Products": "Consumer Defensive",
     "Grocery Stores": "Consumer Defensive",
     "Tobacco": "Consumer Defensive",
-    "Household & Personal Products": "Consumer Defensive",
     "Discount Stores": "Consumer Defensive",
     "Food Distribution": "Consumer Defensive",
     "Education & Training Services": "Consumer Defensive",
+    "Confectioners": "Consumer Defensive",
 
     # Energy
     "Oil & Gas Integrated": "Energy",
@@ -339,8 +358,10 @@ _YAHOO_INDUSTRY_MAP: dict[str, str] = {
     "Chemicals": "Basic Materials",
     "Coking Coal": "Basic Materials",
     "Building Materials": "Basic Materials",
+    "Building Products & Equipment": "Basic Materials",
     "Paper & Paper Products": "Basic Materials",
     "Lumber & Wood Production": "Basic Materials",
+    "Packaging & Containers": "Basic Materials",
 
     # Industrials
     "Conglomerates": "Industrials",
@@ -363,19 +384,27 @@ _YAHOO_INDUSTRY_MAP: dict[str, str] = {
     "Pollution & Treatment Controls": "Industrials",
     "Business Services": "Industrials",
     "Consulting Services": "Industrials",
+    "Aerospace & Defense": "Industrials",
     "Defense": "Industrials",
+    "Infrastructure Operations": "Industrials",
+    "Specialty Business Services": "Industrials",
 
     # Communication Services
     "Telecom Services": "Communication Services",
+    "Telecom - Integrated": "Communication Services",
     "Telecom—Integrated": "Communication Services",
     "Advertising Agencies": "Communication Services",
     "Broadcasting": "Communication Services",
     "Entertainment": "Communication Services",
     "Publishing": "Communication Services",
     "Internet Content & Information": "Communication Services",
-    "Electronic Gaming & Multimedia—Comm": "Communication Services",
 
     # Utilities
+    "Utilities - Regulated Electric": "Utilities",
+    "Utilities - Independent Power Producers": "Utilities",
+    "Utilities - Renewable": "Utilities",
+    "Utilities - Regulated Gas": "Utilities",
+    "Utilities - Diversified": "Utilities",
     "Utilities—Regulated Electric": "Utilities",
     "Utilities—Independent Power Producers": "Utilities",
     "Utilities—Renewable": "Utilities",
@@ -383,14 +412,18 @@ _YAHOO_INDUSTRY_MAP: dict[str, str] = {
     "Utilities—Diversified": "Utilities",
 
     # Real Estate
+    "Real Estate - Development": "Real Estate",
+    "Real Estate - Diversified": "Real Estate",
+    "Real Estate - Services": "Real Estate",
+    "Real Estate Services": "Real Estate",
     "Real Estate—Development": "Real Estate",
     "Real Estate—Diversified": "Real Estate",
-    "Real Estate—Services": "Real Estate",
+    "REIT - Diversified": "Real Estate",
+    "REIT - Office": "Real Estate",
+    "REIT - Retail": "Real Estate",
+    "REIT - Industrial": "Real Estate",
+    "REIT - Residential": "Real Estate",
     "REIT—Diversified": "Real Estate",
-    "REIT—Office": "Real Estate",
-    "REIT—Retail": "Real Estate",
-    "REIT—Industrial": "Real Estate",
-    "REIT—Residential": "Real Estate",
 }
 for _ind, _sec in _YAHOO_INDUSTRY_MAP.items():
     if _ind not in SECTOR_GROUP_MAP:
