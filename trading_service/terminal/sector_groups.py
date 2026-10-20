@@ -238,8 +238,20 @@ SECTOR_GROUP_MAP = {
 }
 
 
+# Yahoo Finance sector names (used when symbols.sector is populated via yfinance).
+# These map each Yahoo sector to itself so the view shows them as top-level groups.
+_YAHOO_SECTORS = [
+    "Financial Services", "Technology", "Healthcare", "Consumer Cyclical",
+    "Consumer Defensive", "Energy", "Basic Materials", "Industrials",
+    "Utilities", "Real Estate", "Communication Services",
+]
+for _s in _YAHOO_SECTORS:
+    if _s not in SECTOR_GROUP_MAP:
+        SECTOR_GROUP_MAP[_s] = _s
+
+
 def get_parent_sector(sector: str) -> str:
-    """Return the parent group for a given NSE sector, or 'Others' if unmapped."""
+    """Return the parent group for a given NSE sector or Yahoo Finance sector, or 'Others' if unmapped."""
     return SECTOR_GROUP_MAP.get(sector, "Others")
 
 
