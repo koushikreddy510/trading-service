@@ -38,6 +38,8 @@ services:
       DATABASE_URL: postgresql://${PGUSER:-market_user}:${PGPASSWORD}@postgres:5432/market
       FYERS_CLIENT_ID: ${FYERS_CLIENT_ID:-}
       FYERS_ACCESS_TOKEN: ${FYERS_ACCESS_TOKEN:-}
+      FLATTRADE_USER_ID: ${FLATTRADE_USER_ID:-}
+      FLATTRADE_TOKEN: ${FLATTRADE_TOKEN:-}
     volumes:
       - ../../data-store/fyers_access_token.txt:/app/fyers_access_token.txt:ro
     ports:
@@ -105,6 +107,7 @@ services:
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
     volumes:
       - ../scheduler/schedules.yaml:/app/schedules.yaml:ro
+      - scheduler_data:/data                           # run history (job_runs.db) survives restarts and deploys
     ports:
       - "127.0.0.1:8002:8002"
     depends_on: [strategy-screener, trading-service, data-store]
@@ -130,3 +133,4 @@ services:
 volumes:
   postgres_data:
   caddy_data:
+  scheduler_data:
