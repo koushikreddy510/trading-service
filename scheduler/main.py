@@ -8,6 +8,7 @@ import os
 import logging
 import subprocess
 import time
+import zoneinfo
 from contextlib import asynccontextmanager
 
 import requests
@@ -133,12 +134,12 @@ def _run_subprocess_job(job_id: str, cmd: list, cwd: str = None):
     _report(job_id, started)
 
 
-scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
+scheduler = BackgroundScheduler(timezone=zoneinfo.ZoneInfo("Asia/Kolkata"))
 
 
 def _register_jobs(config: dict):
     jobs = config.get("jobs", [])
-    tz = config.get("timezone", "Asia/Kolkata")
+    tz = zoneinfo.ZoneInfo(config.get("timezone", "Asia/Kolkata"))
     scheduler.timezone = tz
 
     for job in jobs:
