@@ -238,8 +238,165 @@ SECTOR_GROUP_MAP = {
 }
 
 
-# Yahoo Finance sector names (used when symbols.sector is populated via yfinance).
-# These map each Yahoo sector to itself so the view shows them as top-level groups.
+# Yahoo Finance industry names → parent sector group.
+# symbols.sector is populated with Yahoo's `industry` field (more granular than `sector`),
+# so these map the ~70 Yahoo industry strings to the 11 Yahoo sector names used as parent groups.
+_YAHOO_INDUSTRY_MAP: dict[str, str] = {
+    # Financial Services
+    "Banks—Regional": "Financial Services",
+    "Banks—Diversified": "Financial Services",
+    "Asset Management": "Financial Services",
+    "Capital Markets": "Financial Services",
+    "Credit Services": "Financial Services",
+    "Financial Data & Stock Exchanges": "Financial Services",
+    "Financial Conglomerates": "Financial Services",
+    "Insurance—Life": "Financial Services",
+    "Insurance—Diversified": "Financial Services",
+    "Insurance—Property & Casualty": "Financial Services",
+    "Insurance—Specialty": "Financial Services",
+    "Mortgage Finance": "Financial Services",
+    "Specialty Finance": "Financial Services",
+    "Shell Companies": "Financial Services",
+
+    # Technology
+    "Software—Application": "Technology",
+    "Software—Infrastructure": "Technology",
+    "Information Technology Services": "Technology",
+    "IT Services & Consulting": "Technology",
+    "Semiconductor Equipment & Materials": "Technology",
+    "Semiconductors": "Technology",
+    "Computer Hardware": "Technology",
+    "Electronic Components": "Technology",
+    "Electronics & Computer Distribution": "Technology",
+    "Scientific & Technical Instruments": "Technology",
+
+    # Healthcare
+    "Drug Manufacturers—General": "Healthcare",
+    "Drug Manufacturers—Specialty & Generic": "Healthcare",
+    "Biotechnology": "Healthcare",
+    "Medical Devices": "Healthcare",
+    "Medical Care Facilities": "Healthcare",
+    "Diagnostics & Research": "Healthcare",
+    "Health Information Services": "Healthcare",
+    "Medical Distribution": "Healthcare",
+    "Pharmaceutical Retailers": "Healthcare",
+
+    # Consumer Cyclical
+    "Auto Manufacturers": "Consumer Cyclical",
+    "Auto Parts": "Consumer Cyclical",
+    "Auto & Truck Dealerships": "Consumer Cyclical",
+    "Specialty Retail": "Consumer Cyclical",
+    "Department Stores": "Consumer Cyclical",
+    "Apparel Retail": "Consumer Cyclical",
+    "Apparel Manufacturing": "Consumer Cyclical",
+    "Footwear & Accessories": "Consumer Cyclical",
+    "Home Improvement Retail": "Consumer Cyclical",
+    "Lodging": "Consumer Cyclical",
+    "Restaurants": "Consumer Cyclical",
+    "Travel Services": "Consumer Cyclical",
+    "Luxury Goods": "Consumer Cyclical",
+    "Textile Manufacturing": "Consumer Cyclical",
+    "Gambling": "Consumer Cyclical",
+    "Leisure": "Consumer Cyclical",
+    "Recreational Vehicles": "Consumer Cyclical",
+    "Residential Construction": "Consumer Cyclical",
+    "Internet Retail": "Consumer Cyclical",
+    "Electronic Gaming & Multimedia": "Consumer Cyclical",
+
+    # Consumer Defensive
+    "Packaged Foods": "Consumer Defensive",
+    "Personal Products": "Consumer Defensive",
+    "Beverages—Non-Alcoholic": "Consumer Defensive",
+    "Beverages—Alcoholic": "Consumer Defensive",
+    "Agricultural Farm Products": "Consumer Defensive",
+    "Grocery Stores": "Consumer Defensive",
+    "Tobacco": "Consumer Defensive",
+    "Household & Personal Products": "Consumer Defensive",
+    "Discount Stores": "Consumer Defensive",
+    "Food Distribution": "Consumer Defensive",
+    "Education & Training Services": "Consumer Defensive",
+
+    # Energy
+    "Oil & Gas Integrated": "Energy",
+    "Oil & Gas Refining & Marketing": "Energy",
+    "Oil & Gas E&P": "Energy",
+    "Oil & Gas Equipment & Services": "Energy",
+    "Oil & Gas Midstream": "Energy",
+    "Oil & Gas Drilling": "Energy",
+    "Thermal Coal": "Energy",
+    "Uranium": "Energy",
+
+    # Basic Materials
+    "Steel": "Basic Materials",
+    "Aluminum": "Basic Materials",
+    "Copper": "Basic Materials",
+    "Gold": "Basic Materials",
+    "Silver": "Basic Materials",
+    "Other Industrial Metals & Mining": "Basic Materials",
+    "Other Precious Metals & Mining": "Basic Materials",
+    "Specialty Chemicals": "Basic Materials",
+    "Agricultural Inputs": "Basic Materials",
+    "Chemicals": "Basic Materials",
+    "Coking Coal": "Basic Materials",
+    "Building Materials": "Basic Materials",
+    "Paper & Paper Products": "Basic Materials",
+    "Lumber & Wood Production": "Basic Materials",
+
+    # Industrials
+    "Conglomerates": "Industrials",
+    "Engineering & Construction": "Industrials",
+    "Industrial Distribution": "Industrials",
+    "Specialty Industrial Machinery": "Industrials",
+    "Electrical Equipment & Parts": "Industrials",
+    "Airlines": "Industrials",
+    "Integrated Freight & Logistics": "Industrials",
+    "Airport Operators": "Industrials",
+    "Marine Shipping": "Industrials",
+    "Railroads": "Industrials",
+    "Trucking": "Industrials",
+    "Waste Management": "Industrials",
+    "Staffing & Employment Services": "Industrials",
+    "Security & Protection Services": "Industrials",
+    "Farm & Heavy Construction Machinery": "Industrials",
+    "Metal Fabrication": "Industrials",
+    "Tools & Accessories": "Industrials",
+    "Pollution & Treatment Controls": "Industrials",
+    "Business Services": "Industrials",
+    "Consulting Services": "Industrials",
+    "Defense": "Industrials",
+
+    # Communication Services
+    "Telecom Services": "Communication Services",
+    "Telecom—Integrated": "Communication Services",
+    "Advertising Agencies": "Communication Services",
+    "Broadcasting": "Communication Services",
+    "Entertainment": "Communication Services",
+    "Publishing": "Communication Services",
+    "Internet Content & Information": "Communication Services",
+    "Electronic Gaming & Multimedia—Comm": "Communication Services",
+
+    # Utilities
+    "Utilities—Regulated Electric": "Utilities",
+    "Utilities—Independent Power Producers": "Utilities",
+    "Utilities—Renewable": "Utilities",
+    "Utilities—Regulated Gas": "Utilities",
+    "Utilities—Diversified": "Utilities",
+
+    # Real Estate
+    "Real Estate—Development": "Real Estate",
+    "Real Estate—Diversified": "Real Estate",
+    "Real Estate—Services": "Real Estate",
+    "REIT—Diversified": "Real Estate",
+    "REIT—Office": "Real Estate",
+    "REIT—Retail": "Real Estate",
+    "REIT—Industrial": "Real Estate",
+    "REIT—Residential": "Real Estate",
+}
+for _ind, _sec in _YAHOO_INDUSTRY_MAP.items():
+    if _ind not in SECTOR_GROUP_MAP:
+        SECTOR_GROUP_MAP[_ind] = _sec
+
+# Also add the 11 Yahoo sector names as self-mappings (fallback when industry isn't available)
 _YAHOO_SECTORS = [
     "Financial Services", "Technology", "Healthcare", "Consumer Cyclical",
     "Consumer Defensive", "Energy", "Basic Materials", "Industrials",
@@ -271,8 +428,23 @@ SECTOR_INDICES = {
 # Alias for Metals & Mining (NSE uses "NIFTY METAL")
 SECTOR_INDICES["Metals & Mining"] = "NIFTY METAL"
 
-# Ordered list of parent sectors for consistent UI display
+# Ordered list of parent sectors for consistent UI display.
+# Includes both the original NSE-style groups and Yahoo Finance's 11 broad sectors
+# (used when symbols.sector is populated via Yahoo's `industry` field).
 PARENT_SECTORS = [
+    # Yahoo Finance's 11 sectors (used with yfinance-enriched data)
+    "Financial Services",
+    "Technology",
+    "Healthcare",
+    "Consumer Cyclical",
+    "Consumer Defensive",
+    "Energy",
+    "Basic Materials",
+    "Industrials",
+    "Communication Services",
+    "Utilities",
+    "Real Estate",
+    # Original NSE-style groups (used with screener.in enriched data)
     "Automobiles",
     "Banking & Finance",
     "Insurance",
