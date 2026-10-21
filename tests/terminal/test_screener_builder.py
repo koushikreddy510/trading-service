@@ -42,3 +42,19 @@ def test_saved_screens_round_trip_replace_by_name_and_delete(db):
     with pytest.raises(screener.ScreenError):
         screener.save_screen(db, "bad", [{"field": "nope", "op": ">", "value": 1}], "symbol", True)
     assert screener.delete_saved(db, a["id"]) and screener.list_saved(db) == []
+
+
+def test_market_cap_falls_back_to_screener_in_when_the_symbols_table_has_zero(db):
+    db.execute("INSERT INTO terminal_screener_metrics (run_date, symbol, asof, close) VALUES ('2026-10-21', 'NSE:X-EQ', '2026-10-21', 100)")
+    db.execute("INSERT INTO symbols (tradingsymbol, name, market_cap) VALUES ('NSE:X-EQ', 'X Ltd', 0)")
+    if not db.table_exists("stock_financials"):
+        db.execute("CREATE TABLE stock_financials (tradingsymbol TEXT, market_cap_cr DOUBLE PRECISION, scraped_at TIMESTAMPTZ)")
+    cols = {r["column_name"] for r in db.rows("SELECT column_name FROM information_schema.columns WHERE table_name = 'stock_financials' "
+                                                "AND is_nullable = 'NO' AND column_default IS NULL")}
+    values = {"tradingsymbol": "NSE:X-EQ", "market_cap_cr": 2500, "nse_symbol": "X", "result_type": "quarterly", "period": "Sep 2026",
+              "company_name": "X Ltd", "source": "screener.in"}
+    keys = ["tradingsymbol", "market_cap_cr"] + sorted(c for c in cols if c not in ("tradingsymbol", "market_cap_cr"))
+    db.execute(f"INSERT INTO stock_financials ({', '.join(keys)}, scraped_at) VALUES ({', '.join(':' + k for k in keys)}, now())",
+               **{k: values.get(k, "x") for k in keys})
+    out = screener.run_screen(db, [{"field": "market_cap", "op": ">", "value": 1000}], "symbol", False, 10)
+    assert [r["symbol"] for r in out["rows"]] == ["NSE:X-EQ"] and out["rows"][0]["market_cap"] == 2500

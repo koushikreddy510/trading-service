@@ -297,9 +297,13 @@ def latest_run(db: Database) -> Optional[date]:
     return db.scalar("SELECT max(run_date) FROM terminal_screener_metrics")
 
 
+# symbols.market_cap is in rupees (data-store: NSE issued shares x price) and the screen speaks crore. Where NSE gave
+# nothing (it can come back empty from a server, which used to store 0 for every stock) screener.in's figure is used.
+MARKET_CAP_SQL = "COALESCE(NULLIF(s.market_cap, 0) / 1e7, fm.market_cap_cr)"
+
+
 def _col(field: str) -> str:
-    # symbols.market_cap is in rupees (data-store: issued shares x price); the screen speaks crore
-    return "s.market_cap / 1e7" if field == "market_cap" else f"m.{field}"
+    return MARKET_CAP_SQL if field == "market_cap" else f"m.{field}"
 
 
 def _operand(raw: Any, params: dict, key: str) -> str:
@@ -353,7 +357,12 @@ def run_screen(
         "LEFT JOIN (SELECT NULL::text AS tradingsymbol, NULL::text AS name, NULL::text AS sector, "
         "NULL::float8 AS market_cap WHERE false) s ON s.tradingsymbol = m.symbol"
     )
-    extra = "s.name AS name, s.sector AS sector, s.market_cap / 1e7 AS market_cap"
+    join += (
+        " LEFT JOIN (SELECT DISTINCT ON (tradingsymbol) tradingsymbol, market_cap_cr FROM stock_financials WHERE market_cap_cr > 0 "
+        "ORDER BY tradingsymbol, scraped_at DESC) fm ON fm.tradingsymbol = m.symbol" if db.table_exists("stock_financials") else
+        " LEFT JOIN (SELECT NULL::text AS tradingsymbol, NULL::float8 AS market_cap_cr WHERE false) fm ON fm.tradingsymbol = m.symbol"
+    )
+    extra = f"s.name AS name, s.sector AS sector, {MARKET_CAP_SQL} AS market_cap"
     sql = (
         f"SELECT {cols}, {extra} FROM terminal_screener_metrics m {join} WHERE {' AND '.join(where)} "
         f"ORDER BY {sort_col} {'DESC' if descending else 'ASC'} NULLS LAST, m.symbol LIMIT :n"
