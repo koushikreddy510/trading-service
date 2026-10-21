@@ -123,7 +123,7 @@ class RuleEngine:
             return []  # this rule already fired on this bar
         events: list[dict] = [{"type": "signal", "signal": signal.to_json()}]
         if signal.status == "open":
-            position = self.book.open_from_signal(signal, quantity, self.clock(), **rule.exit_plan())
+            position = self.book.open_from_signal(signal, quantity, self.clock(), **rule.exit_plan())  # type: ignore[arg-type]
             events.append({"type": "position", "position": position.to_json()})
             if rule.once:
                 self.rules.set_enabled(rule.id, False)
@@ -133,10 +133,12 @@ class RuleEngine:
     @staticmethod
     def _due(p: PaperPosition, timeframe: str) -> tuple[bool, bool]:
         """(trail is due, exit rule is due) for a candle of `timeframe` closing."""
-        return (
-            bool(p.trail) and p.trail.get("timeframe") == timeframe,
-            bool(p.exit_condition) and p.exit_timeframe == timeframe,
-        )
+        trail_due = bool(p.trail) and p.trail.get("timeframe") == timeframe
+        if p.exit_level == 1:
+            exit_due = bool(p.exit_condition) and p.exit_timeframe == timeframe
+        else:
+            exit_due = bool(p.exit_condition_2) and (p.exit_timeframe_2 or p.exit_timeframe) == timeframe
+        return trail_due, exit_due
 
     def _manage(self, symbol: str, timeframe: str, bar_start: datetime) -> list[dict]:
         due = [(p, *self._due(p, timeframe)) for p in self.book.open_positions(symbol)]
@@ -155,16 +157,25 @@ class RuleEngine:
             if closed_at <= p.opened_at:
                 continue  # the candle the position was opened on (or one before it): the plan starts with the next one
             if exit_ and self._exit_fires(p, ctx):
-                events.append({"type": "position", "position": self.book.close(p, last.close, "exit_rule", closed_at).to_json()})
+                if p.exit_level == 1 and p.exit_condition_2:
+                    # First of two exits: close 50%, stay open waiting for level 2
+                    events.append({"type": "position", "position": self.book.partial_close(p, last.close, "exit_rule_1", closed_at).to_json()})
+                else:
+                    # Either a single-exit rule, or the second level of a 2-level exit
+                    reason = "exit_rule_2" if p.exit_level == 2 else "exit_rule"
+                    events.append({"type": "position", "position": self.book.close(p, last.close, reason, closed_at).to_json()})
             elif trail and self._trail(p, ctx):
                 events.append({"type": "position", "position": p.to_json()})
         return events
 
     def _exit_fires(self, p: PaperPosition, ctx: EvalContext) -> bool:
+        cond = p.exit_condition if p.exit_level == 1 else p.exit_condition_2
+        if not cond:
+            return False
         try:
-            return evaluate(p.exit_condition, ctx).fired
+            return evaluate(cond, ctx).fired
         except ConditionError as e:
-            log.warning("exit rule of position %s skipped: %s", p.id, e)
+            log.warning("exit rule of position %s (level %s) skipped: %s", p.id, p.exit_level, e)
             return False
 
     def _trail(self, p: PaperPosition, ctx: EvalContext) -> bool:

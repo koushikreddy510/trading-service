@@ -40,6 +40,8 @@ class Rule:
     trail: Optional[dict] = None
     exit_condition: Optional[dict] = None
     exit_timeframe: Optional[str] = None
+    exit_condition_2: Optional[dict] = None
+    exit_timeframe_2: Optional[str] = None
 
     def to_json(self) -> dict:
         return {
@@ -47,12 +49,19 @@ class Rule:
             "side": self.side, "condition": self.condition, "stop": self.stop, "target": self.target,
             "quantity": self.quantity, "enabled": self.enabled, "once": self.once,
             "trail": self.trail, "exit_condition": self.exit_condition, "exit_timeframe": self.exit_timeframe,
+            "exit_condition_2": self.exit_condition_2, "exit_timeframe_2": self.exit_timeframe_2,
         }
 
     def exit_plan(self) -> dict:
         """What a position opened by this rule carries: timeframes resolved now, so later edits cannot change it."""
         trail = {**self.trail, "timeframe": self.trail.get("timeframe") or self.timeframe} if self.trail else None
-        return {"trail": trail, "exit_condition": self.exit_condition, "exit_timeframe": self.exit_timeframe or self.timeframe}
+        return {
+            "trail": trail,
+            "exit_condition": self.exit_condition,
+            "exit_timeframe": self.exit_timeframe or self.timeframe,
+            "exit_condition_2": self.exit_condition_2,
+            "exit_timeframe_2": self.exit_timeframe_2 or (self.timeframe if self.exit_condition_2 else None),
+        }
 
 
 def rule_from_payload(raw: Mapping[str, Any], rule_id: Optional[str] = None) -> Rule:
@@ -82,6 +91,8 @@ def rule_from_payload(raw: Mapping[str, Any], rule_id: Optional[str] = None) -> 
             trail=validate_trail(raw.get("trail")),
             exit_condition=validate_condition(raw["exit_condition"]) if raw.get("exit_condition") else None,
             exit_timeframe=validate_timeframe(str(raw["exit_timeframe"])) if raw.get("exit_timeframe") else None,
+            exit_condition_2=validate_condition(raw["exit_condition_2"]) if raw.get("exit_condition_2") else None,
+            exit_timeframe_2=validate_timeframe(str(raw["exit_timeframe_2"])) if raw.get("exit_timeframe_2") else None,
         )
     except (ConditionError, ValueError) as e:
         raise InvalidRule(str(e)) from None
@@ -112,7 +123,8 @@ def _row_to_rule(r: dict) -> Rule:
         id=r["id"], symbol=r["symbol"], timeframe=r["timeframe"], name=r["name"], side=r["side"],
         condition=r["condition"], stop=r["stop"], target=r["target"], quantity=r["quantity"],
         enabled=r["enabled"], once=r["once"], trail=r["trail"], exit_condition=r["exit_condition"],
-        exit_timeframe=r["exit_timeframe"],
+        exit_timeframe=r["exit_timeframe"], exit_condition_2=r.get("exit_condition_2"),
+        exit_timeframe_2=r.get("exit_timeframe_2"),
     )
 
 
@@ -144,16 +156,18 @@ class RuleRepo:
             """
             INSERT INTO terminal_rules
                 (id, user_id, symbol, timeframe, name, side, condition, stop, target, quantity, enabled, once,
-                 trail, exit_condition, exit_timeframe)
+                 trail, exit_condition, exit_timeframe, exit_condition_2, exit_timeframe_2)
             VALUES (:id, :u, :symbol, :tf, :name, :side, CAST(:cond AS JSONB), CAST(:stop AS JSONB),
                     CAST(:target AS JSONB), :qty, :enabled, :once,
-                    CAST(:trail AS JSONB), CAST(:exit AS JSONB), :exit_tf)
+                    CAST(:trail AS JSONB), CAST(:exit AS JSONB), :exit_tf,
+                    CAST(:exit2 AS JSONB), :exit_tf2)
             ON CONFLICT (id) DO UPDATE SET
                 symbol = EXCLUDED.symbol, timeframe = EXCLUDED.timeframe, name = EXCLUDED.name,
                 side = EXCLUDED.side, condition = EXCLUDED.condition, stop = EXCLUDED.stop,
                 target = EXCLUDED.target, quantity = EXCLUDED.quantity, enabled = EXCLUDED.enabled,
                 once = EXCLUDED.once, trail = EXCLUDED.trail, exit_condition = EXCLUDED.exit_condition,
-                exit_timeframe = EXCLUDED.exit_timeframe, updated_at = now()
+                exit_timeframe = EXCLUDED.exit_timeframe, exit_condition_2 = EXCLUDED.exit_condition_2,
+                exit_timeframe_2 = EXCLUDED.exit_timeframe_2, updated_at = now()
             WHERE terminal_rules.user_id = EXCLUDED.user_id
             """,
             id=rule.id, u=self.user, symbol=rule.symbol, tf=rule.timeframe, name=rule.name, side=rule.side,
@@ -162,6 +176,8 @@ class RuleRepo:
             qty=rule.quantity, enabled=rule.enabled, once=rule.once,
             trail=jdump(rule.trail) if rule.trail else None,
             exit=jdump(rule.exit_condition) if rule.exit_condition else None, exit_tf=rule.exit_timeframe,
+            exit2=jdump(rule.exit_condition_2) if rule.exit_condition_2 else None,
+            exit_tf2=rule.exit_timeframe_2,
         )
         return rule
 

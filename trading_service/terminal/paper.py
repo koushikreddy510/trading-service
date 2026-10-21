@@ -39,6 +39,13 @@ class PaperPosition:
     trail: Optional[dict] = None
     exit_condition: Optional[dict] = None
     exit_timeframe: Optional[str] = None
+    # Two-level exits: level 1 closes 50%, level 2 closes the rest.
+    exit_condition_2: Optional[dict] = None
+    exit_timeframe_2: Optional[str] = None
+    exit_level: int = 1            # 1 = waiting for first exit; 2 = first done, waiting for second
+    exit_qty_1: Optional[int] = None          # quantity closed at exit level 1
+    exit_price_1: Optional[float] = None      # price at which first half exited
+    exit_pnl_1: Optional[float] = None        # realised P&L on the first half
 
     def unrealized(self, price: float) -> float:
         direction = 1 if self.side == "BUY" else -1
@@ -52,7 +59,9 @@ class PaperPosition:
             "closed_at": to_epoch(self.closed_at) if self.closed_at else None,
             "exit_price": self.exit_price, "exit_reason": self.exit_reason, "realized_pnl": self.realized_pnl,
             "initial_stop": self.initial_stop, "trail": self.trail, "exit_condition": self.exit_condition,
-            "exit_timeframe": self.exit_timeframe,
+            "exit_timeframe": self.exit_timeframe, "exit_condition_2": self.exit_condition_2,
+            "exit_timeframe_2": self.exit_timeframe_2, "exit_level": self.exit_level,
+            "exit_qty_1": self.exit_qty_1, "exit_price_1": self.exit_price_1, "exit_pnl_1": self.exit_pnl_1,
         }
         if self.status == "open" and mark is not None:
             out["last_price"] = mark
@@ -67,6 +76,9 @@ def _from_row(r: dict) -> PaperPosition:
         opened_at=r["opened_at"], closed_at=r["closed_at"], exit_price=r["exit_price"],
         exit_reason=r["exit_reason"], realized_pnl=r["realized_pnl"], initial_stop=r["initial_stop"],
         trail=r["trail"], exit_condition=r["exit_condition"], exit_timeframe=r["exit_timeframe"],
+        exit_condition_2=r.get("exit_condition_2"), exit_timeframe_2=r.get("exit_timeframe_2"),
+        exit_level=r.get("exit_level") or 1, exit_qty_1=r.get("exit_qty_1"),
+        exit_price_1=r.get("exit_price_1"), exit_pnl_1=r.get("exit_pnl_1"),
     )
 
 
@@ -91,25 +103,30 @@ class PaperBook:
     def open_from_signal(
         self, signal: Signal, quantity: int, now: Optional[datetime] = None,
         trail: Optional[dict] = None, exit_condition: Optional[dict] = None, exit_timeframe: Optional[str] = None,
+        exit_condition_2: Optional[dict] = None, exit_timeframe_2: Optional[str] = None,
     ) -> PaperPosition:
         position = PaperPosition(
             id=new_id(), signal_id=signal.id, symbol=signal.symbol, side=signal.side, quantity=quantity,
             entry_price=signal.entry, stop=signal.stop, target=signal.target, status="open",
             opened_at=now or datetime.now(timezone.utc), initial_stop=signal.stop, trail=trail,
             exit_condition=exit_condition, exit_timeframe=exit_timeframe if exit_condition else None,
+            exit_condition_2=exit_condition_2, exit_timeframe_2=exit_timeframe_2 if exit_condition_2 else None,
+            exit_level=1,
         )
         self.db.execute(
             """
             INSERT INTO terminal_paper_positions
                 (id, signal_id, symbol, side, quantity, entry_price, stop, target, status, opened_at,
-                 initial_stop, trail, exit_condition, exit_timeframe)
+                 initial_stop, trail, exit_condition, exit_timeframe, exit_condition_2, exit_timeframe_2)
             VALUES (:id, :sig, :symbol, :side, :qty, :entry, :stop, :target, 'open', :opened,
-                    :initial, CAST(:trail AS JSONB), CAST(:exit AS JSONB), :exit_tf)
+                    :initial, CAST(:trail AS JSONB), CAST(:exit AS JSONB), :exit_tf,
+                    CAST(:exit2 AS JSONB), :exit_tf2)
             """,
             id=position.id, sig=position.signal_id, symbol=position.symbol, side=position.side, qty=quantity,
             entry=position.entry_price, stop=position.stop, target=position.target, opened=position.opened_at,
             initial=position.initial_stop, trail=jdump(trail) if trail else None,
             exit=jdump(exit_condition) if exit_condition else None, exit_tf=position.exit_timeframe,
+            exit2=jdump(exit_condition_2) if exit_condition_2 else None, exit_tf2=position.exit_timeframe_2,
         )
         with self._lock:
             self._open.setdefault(position.symbol, []).append(position)
@@ -156,6 +173,38 @@ class PaperBook:
         with self._lock:
             found = next((p for ps in self._open.values() for p in ps if p.id == position_id), None)
         return self._close(found, price, "manual", ts) if found else None
+
+    def partial_close(self, p: PaperPosition, price: float, reason: str, ts: Optional[datetime] = None) -> PaperPosition:
+        """Exit the first half of a 2-level position; advance it to exit level 2.
+
+        Sells floor(quantity/2) shares, records the partial P&L, then updates the
+        position in-place so the engine checks exit_condition_2 going forward.
+        Returns the mutated (still-open) position for broadcasting.
+        """
+        closed_at = ts or datetime.now(timezone.utc)
+        qty_1 = p.quantity // 2
+        remaining = p.quantity - qty_1
+        direction = 1 if p.side == "BUY" else -1
+        pnl_1 = (price - p.entry_price) * direction * qty_1
+        self.db.execute(
+            """
+            UPDATE terminal_paper_positions SET
+                quantity     = :remaining,
+                exit_level   = 2,
+                exit_qty_1   = :qty1,
+                exit_price_1 = :px1,
+                exit_pnl_1   = :pnl1
+            WHERE id = :id AND status = 'open'
+            """,
+            remaining=remaining, qty1=qty_1, px1=price, pnl1=pnl_1, id=p.id,
+        )
+        with self._lock:
+            p.quantity = remaining
+            p.exit_level = 2
+            p.exit_qty_1 = qty_1
+            p.exit_price_1 = price
+            p.exit_pnl_1 = pnl_1
+        return p
 
     def move_stop(self, p: PaperPosition, stop: float) -> PaperPosition:
         """Trail the stop. Only ever tightens: a stop that would loosen (or not move) is ignored."""

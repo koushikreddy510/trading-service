@@ -64,9 +64,11 @@ CREATE INDEX IF NOT EXISTS idx_terminal_rules_symbol ON terminal_rules (symbol, 
 -- Exit side of a rule (added later, so ALTER): a trailing stop that tightens on completed candles of its own
 -- timeframe, and an exit condition checked on completed candles of `exit_timeframe`. Both are copied onto the
 -- position when it opens, so editing a rule never changes a position that is already running.
-ALTER TABLE terminal_rules ADD COLUMN IF NOT EXISTS trail          JSONB;
-ALTER TABLE terminal_rules ADD COLUMN IF NOT EXISTS exit_condition JSONB;
-ALTER TABLE terminal_rules ADD COLUMN IF NOT EXISTS exit_timeframe TEXT;
+ALTER TABLE terminal_rules ADD COLUMN IF NOT EXISTS trail            JSONB;
+ALTER TABLE terminal_rules ADD COLUMN IF NOT EXISTS exit_condition   JSONB;
+ALTER TABLE terminal_rules ADD COLUMN IF NOT EXISTS exit_timeframe   TEXT;
+ALTER TABLE terminal_rules ADD COLUMN IF NOT EXISTS exit_condition_2 JSONB;
+ALTER TABLE terminal_rules ADD COLUMN IF NOT EXISTS exit_timeframe_2 TEXT;
 
 -- A signal is the record of a rule firing on one closed bar. UNIQUE (rule_id,
 -- bar_time) is what guarantees a rule can never fire twice for the same candle,
@@ -106,10 +108,18 @@ CREATE TABLE IF NOT EXISTS terminal_paper_positions (
     realized_pnl DOUBLE PRECISION
 );
 CREATE INDEX IF NOT EXISTS idx_terminal_paper_status ON terminal_paper_positions (status, symbol);
-ALTER TABLE terminal_paper_positions ADD COLUMN IF NOT EXISTS initial_stop   DOUBLE PRECISION;
-ALTER TABLE terminal_paper_positions ADD COLUMN IF NOT EXISTS trail          JSONB;
-ALTER TABLE terminal_paper_positions ADD COLUMN IF NOT EXISTS exit_condition JSONB;
-ALTER TABLE terminal_paper_positions ADD COLUMN IF NOT EXISTS exit_timeframe TEXT;
+ALTER TABLE terminal_paper_positions ADD COLUMN IF NOT EXISTS initial_stop     DOUBLE PRECISION;
+ALTER TABLE terminal_paper_positions ADD COLUMN IF NOT EXISTS trail            JSONB;
+ALTER TABLE terminal_paper_positions ADD COLUMN IF NOT EXISTS exit_condition   JSONB;
+ALTER TABLE terminal_paper_positions ADD COLUMN IF NOT EXISTS exit_timeframe   TEXT;
+-- Two-level exits: exit_condition fires first (50%), exit_condition_2 fires second (remaining 50%).
+-- exit_level tracks which is pending (1=first, 2=second). exit_qty_1/price_1/pnl_1 record the partial close.
+ALTER TABLE terminal_paper_positions ADD COLUMN IF NOT EXISTS exit_condition_2 JSONB;
+ALTER TABLE terminal_paper_positions ADD COLUMN IF NOT EXISTS exit_timeframe_2 TEXT;
+ALTER TABLE terminal_paper_positions ADD COLUMN IF NOT EXISTS exit_level       SMALLINT NOT NULL DEFAULT 1;
+ALTER TABLE terminal_paper_positions ADD COLUMN IF NOT EXISTS exit_qty_1       INTEGER;
+ALTER TABLE terminal_paper_positions ADD COLUMN IF NOT EXISTS exit_price_1     DOUBLE PRECISION;
+ALTER TABLE terminal_paper_positions ADD COLUMN IF NOT EXISTS exit_pnl_1       DOUBLE PRECISION;
 
 -- ---------------------------------------------------------------- market data
 -- Only CLOSED 1-minute bars are stored. 1-second data is never persisted: ticks
