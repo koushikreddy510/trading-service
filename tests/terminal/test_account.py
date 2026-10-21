@@ -18,7 +18,8 @@ QUOTES = {
 
 
 class FakeApi:
-    def __init__(self, positions=None, cash="50000.00"):
+    def __init__(self, positions=None, cash="50000.00", mtf=False):
+        self.mtf = mtf
         self.calls = []
         self.positions = positions
         self.cash = cash
@@ -33,6 +34,8 @@ class FakeApi:
         if endpoint == "GetQuotes":
             return QUOTES[payload["token"]]
         if endpoint == "GetOrderMargin":
+            if payload["prd"] == "F" and not self.mtf:
+                return {"stat": "Ok", "ordermargin": "0.00", "remarks": "Invalid Level"}
             return {"stat": "Ok", "ordermargin": "30259.80", "marginused": "35259.80", "remarks": ""}
         if self.positions is None:
             raise BrokerError("PositionBook: no data")
@@ -83,17 +86,35 @@ def test_a_futures_preview_sends_lots_times_lot_size_and_values_the_contract():
     assert p["available"] == 45000.0 and p["shortfall"] == 0.0 and p["preview_only"] is True
 
 
-def test_a_stock_preview_is_in_shares_and_defaults_to_delivery():
+def test_stocks_are_mtf_or_intraday_and_derivatives_nrml_or_intraday_nothing_else():
+    products = account(FakeApi()).products()
+    assert [(p["prd"], p["name"], p["listed"]) for p in products["NSE"]] == [("F", "MTF", False), ("I", "Intraday", True)]
+    assert [(p["prd"], p["name"]) for p in products["MCX"]] == [("M", "NRML"), ("I", "Intraday")]
+
+
+def test_a_stock_preview_is_in_shares_and_defaults_to_intraday_while_mtf_is_not_activated():
     p = account(FakeApi(cash="1000.00")).preview("NSE:SBIN-EQ", "BUY", 10, price=960.0)
-    assert (p["product"], p["units"], p["price"], p["contract_value"]) == ("C", 10, 960.0, 9600.0)
+    assert (p["product"], p["product_name"], p["units"], p["price"], p["contract_value"]) == ("I", "Intraday", 10, 960.0, 9600.0)
     assert p["shortfall"] == pytest.approx(30259.8 + 4000.0)          # available is 1000 - 5000 = -4000
 
 
-def test_a_product_the_account_does_not_have_is_refused_before_asking_the_broker():
+def test_mtf_before_it_is_activated_says_so():
+    with pytest.raises(ValueError, match="MTF is not activated"):
+        account(FakeApi()).preview("NSE:SBIN-EQ", "BUY", 10, product="F")
+    assert account(FakeApi(mtf=True)).preview("NSE:SBIN-EQ", "BUY", 10, product="F")["product_name"] == "MTF"
+
+
+@pytest.mark.parametrize("product", ["C", "H", "B", "M"])
+def test_delivery_cover_bracket_and_nrml_on_stocks_are_refused_before_asking_the_broker(product):
     api = FakeApi()
-    with pytest.raises(ValueError, match="not enabled for NSE"):
-        account(api).preview("NSE:SBIN-EQ", "BUY", 1, product="M")
+    with pytest.raises(ValueError, match="NSE orders are MTF or Intraday"):
+        account(api).preview("NSE:SBIN-EQ", "BUY", 1, product=product)
     assert "GetOrderMargin" not in [c for c, _ in api.calls]
+
+
+def test_cnc_is_refused_for_derivatives_too():
+    with pytest.raises(ValueError, match="MCX orders are NRML or Intraday"):
+        account(FakeApi()).preview("MCX:SILVERM30NOV26", "BUY", 1, product="C")
 
 
 def test_an_existing_position_in_the_same_contract_and_product_is_flagged():

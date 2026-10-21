@@ -5,6 +5,10 @@ PositionBook is read so the ticket can warn when an order would net into a posit
 account holds NRML positions we must never touch, and a new NRML order in the same contract would merge with them).
 
 Quantities: derivatives (MCX, NFO, ...) are entered in LOTS and sent to the broker as lots x lot size; stocks in shares.
+
+Products are OUR policy, not just what the account allows: stocks MTF or Intraday, derivatives NRML or Intraday.
+Delivery (CNC), cover and bracket orders are never offered or accepted. MTF is Flattrade product "F"; until it is
+activated for the account the broker answers "Invalid Level", which is shown as such.
 """
 from __future__ import annotations
 
@@ -16,6 +20,9 @@ from .sector_groups import sector_index
 from .timeframes import exchange_of
 
 EQUITY = {"NSE", "BSE"}
+# The only products our system uses, in the order offered (first = default when enabled on the account).
+POLICY = {"equity": [("F", "MTF"), ("I", "Intraday")], "derivative": [("M", "NRML"), ("I", "Intraday")]}
+NOT_ACTIVATED = "Invalid Level"
 FUNDS_CACHE_SECONDS = 15
 PRODUCTS_CACHE_SECONDS = 3600
 
@@ -81,17 +88,24 @@ class BrokerAccount:
         self._funds = (now, out)
         return out
 
-    def products(self) -> dict[str, list[dict]]:
-        """Per exchange, the products this account may use: {"MCX": [{"prd": "M", "name": "NRML"}, ...]}."""
+    def account_products(self) -> dict[str, set[str]]:
+        """Per exchange, the product codes the broker lists for this account (UserDetails `prarr`)."""
         now = time.monotonic()
         if self._products and now - self._products[0] < PRODUCTS_CACHE_SECONDS:
             return self._products[1]
-        out: dict[str, list[dict]] = {}
+        out: dict[str, set[str]] = {}
         for p in self._post("UserDetails", {}).get("prarr") or []:
             for ex in p.get("exch") or []:
-                out.setdefault(ex, []).append({"prd": p["prd"], "name": p.get("s_prdt_ali") or p["prd"]})
+                out.setdefault(ex, set()).add(p["prd"])
         self._products = (now, out)
         return out
+
+    def products(self) -> dict[str, list[dict]]:
+        """Per exchange, our products: {"NSE": [{"prd": "F", "name": "MTF", "listed": False}, {"prd": "I", ...}]}.
+        `listed` says whether the broker lists it for the account (MTF is not listed until activated)."""
+        listed = self.account_products()
+        return {ex: [{"prd": prd, "name": name, "listed": prd in codes} for prd, name in POLICY["equity" if ex in EQUITY else "derivative"]]
+                for ex, codes in listed.items()}
 
     # ------------------------------------------------------------------ quote
     def quote(self, symbol: str) -> dict:
@@ -128,10 +142,10 @@ class BrokerAccount:
         exchange = exchange_of(symbol)
         allowed = self.products().get(exchange, [])
         if product is None:
-            product = "C" if exchange in EQUITY else "M"
+            product = next((p["prd"] for p in allowed if p["listed"]), allowed[0]["prd"] if allowed else "I")
         if product not in {p["prd"] for p in allowed}:
-            names = ", ".join(f"{p['name']} ({p['prd']})" for p in allowed) or "none"
-            raise ValueError(f"product {product!r} is not enabled for {exchange} on this account; allowed: {names}")
+            names = " or ".join(p["name"] for p in allowed) or "none"
+            raise ValueError(f"product {product!r} is not used here; {exchange} orders are {names}")
 
         q = self.quote(symbol)
         px = price if (price_type == "LMT" and price) else q["ltp"]
@@ -144,6 +158,9 @@ class BrokerAccount:
             "actid": self.account_id, "exch": exchange, "tsym": tsym, "qty": str(units), "prc": str(px),
             "prctyp": price_type, "prd": product, "trantype": "B" if side == "BUY" else "S",
         })
+        if m.get("remarks") == NOT_ACTIVATED:
+            raise ValueError(f"{next(p['name'] for p in allowed if p['prd'] == product)} is not activated on this Flattrade account "
+                             "(the broker says 'Invalid Level'); activate it with Flattrade, then this works")
         funds = self.funds()
         margin = _f(m, "ordermargin")
         value = px * (units if exchange in EQUITY else lots * q["point_value"])
