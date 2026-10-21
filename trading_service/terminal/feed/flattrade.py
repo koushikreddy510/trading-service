@@ -62,9 +62,11 @@ class FlattradeApi:
     def _requests_post(self, endpoint: str, jdata: dict) -> Any:
         import requests
 
+        # Send as raw string — Flattrade rejects URL-encoded JSON ({ becomes %7B etc.)
+        raw = f"jData={json.dumps(jdata, separators=(',', ':'))}&jKey={self.token}"
         resp = requests.post(
             f"{self.base_url}/{endpoint}",
-            data={"jData": json.dumps(jdata, separators=(",", ":")), "jKey": self.token},
+            data=raw.encode(),
             timeout=30,
         )
         try:

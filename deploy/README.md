@@ -84,6 +84,12 @@ deploy.sh status        deploy.sh logs trading-service      deploy.sh migrate
 `BRANCH=some-branch deploy.sh trading` deploys another branch (for testing). The script only fast-forwards, so a dirty or
 diverged checkout on the VM stops it rather than being overwritten.
 
+## Scheduled jobs
+
+Open `http://<server-ip>/scheduler/ui` (same password): every job with its next run and last result, then the latest 50 runs.
+`/scheduler/jobs`, `/scheduler/runs?job=<id>&limit=50` and `POST /scheduler/jobs/<id>/run` are the same data and a manual trigger as JSON.
+History lives in a Docker volume (`scheduler_data`), newest 2,000 runs kept; Slack still gets one message per job (`SLACK_JOBS_NOTIFY=all|failures|off`).
+
 ## GitHub Actions
 
 `github-workflow.example.yml` is the whole thing: copy it into each repo as `.github/workflows/deploy.yml`, set `SERVICE`

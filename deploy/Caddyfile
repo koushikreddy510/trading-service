@@ -8,6 +8,11 @@
 	handle /terminal/* {
 		reverse_proxy trading-service:8001
 	}
+	# Job overview and run history (scheduler): open /scheduler/ui
+	handle /scheduler/* {
+		uri strip_prefix /scheduler
+		reverse_proxy scheduler:8002
+	}
 	handle {
 		root * /srv
 		try_files {path} /index.html
