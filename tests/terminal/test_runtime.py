@@ -147,6 +147,14 @@ async def test_a_tick_through_the_stop_closes_the_position_at_that_price(live):
     assert live.t.book.open_positions() == []
 
 
+async def test_an_open_position_keeps_getting_bar_closes_after_its_rule_is_switched_off(live):
+    await _open_position(live)
+    (rule,) = live.t.rules.list()
+    live.t.rules.set_enabled(rule.id, False)          # a `once` rule does this to itself; so can the user
+    closes = live.t.builder.flush(ist(2026, 10, 19, 9, 30, 1))
+    assert ("5m", ist(2026, 10, 19, 9, 25)) in {(e.timeframe, e.bar_start) for e in closes if e.symbol == SYM}
+
+
 async def test_a_tick_to_the_target_takes_profit(live):
     await _open_position(live)
     live.at(9, 26, 0)

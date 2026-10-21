@@ -66,7 +66,7 @@ class Terminal:
         self.quotes = QuoteBoard()
         self.hub = Hub(self.subs, self.quotes, self._feed_control, min_interval=hub_interval)
         self.candles = CandleService(db, history, None, clock)
-        self.builder = CandleBuilder(self.candles.store_minute, self._rule_symbols)
+        self.builder = CandleBuilder(self.candles.store_minute, self._evaluated_symbols)
         self.candles.builder = self.builder
         self.instruments = Instruments(db)
         self.book = PaperBook(db, self.instruments.point_value)
@@ -134,6 +134,11 @@ class Terminal:
     # --------------------------------------------------------------- subscriptions
     def _rule_symbols(self) -> set[str]:
         return {r.symbol for r in self.rules.list(enabled_only=True)}
+
+    def _evaluated_symbols(self) -> set[str]:
+        """Symbols whose bar closes reach the rule engine: enabled rules (entries) and open positions (trailing stop
+        and exit rule), so a position keeps being managed after its rule fired `once` or was switched off."""
+        return self._rule_symbols() | {p.symbol for p in self.book.open_positions()}
 
     async def refresh_background_subscriptions(self) -> None:
         """Keep the feed subscribed to symbols the rule engine and open positions need,
