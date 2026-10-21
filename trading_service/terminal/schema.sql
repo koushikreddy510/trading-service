@@ -386,3 +386,17 @@ CREATE TABLE IF NOT EXISTS terminal_approvals (
     decided_at   TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_terminal_approvals_status ON terminal_approvals (status, expires_at);
+
+-- screener: Supertrend(5,2) and the two Supertrends agreeing (dual-Supertrend strategy); saved custom screens
+ALTER TABLE terminal_screener_metrics ADD COLUMN IF NOT EXISTS supertrend_52_dir INTEGER;
+ALTER TABLE terminal_screener_metrics ADD COLUMN IF NOT EXISTS st_agree INTEGER;
+ALTER TABLE terminal_screener_metrics ADD COLUMN IF NOT EXISTS st_agree_fresh INTEGER;
+CREATE TABLE IF NOT EXISTS terminal_saved_screens (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    filters    JSONB NOT NULL,
+    sort       TEXT NOT NULL DEFAULT 'volume_ratio',
+    descending BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

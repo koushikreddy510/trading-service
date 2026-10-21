@@ -331,7 +331,9 @@ class TestFinancialsAndScreener:
         names = {p["name"] for p in client.get("/terminal/screener/presets").json()["presets"]}
         assert {"uptrend", "oversold", "volume_breakout"} <= names
         cols = client.get("/terminal/screener/columns").json()
-        assert {"name": "rsi_14", "label": "RSI 14", "unit": "int", "short": "RSI"} in cols["columns"] and ">=" in cols["operators"]
+        rsi = next(c for c in cols["columns"] if c["name"] == "rsi_14")
+        assert {k: rsi[k] for k in ("label", "unit", "short", "group", "technical")} == {"label": "RSI 14", "unit": "int", "short": "RSI", "group": "Momentum", "technical": True}
+        assert ">=" in cols["operators"] and cols["quick"] and "Valuation" in cols["groups"]
 
     def test_bad_screens_are_400_and_unknown_presets_404(self, client):
         assert client.post("/terminal/screener/run", json={"filters": [{"field": "close; x", "op": ">", "value": 1}]}).status_code == 400

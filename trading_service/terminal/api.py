@@ -580,8 +580,30 @@ def delete_backtest(request: Request, backtest_id: str):
 # -------------------------------------------------------------------- screener
 @router.get("/screener/columns")
 def screener_columns():
-    return {"columns": [{"name": k, "label": v, "unit": screener.UNITS.get(k, "num"), "short": screener.SHORT.get(k, v)} for k, v in screener.FILTERABLE.items()],
-            "operators": list(screener.OPS)}
+    return {"columns": [{"name": k, "label": v, "unit": screener.UNITS.get(k, "num"), "short": screener.SHORT.get(k, v), "group": screener.group_of(k),
+                         "technical": screener.group_of(k) in screener.TECHNICAL_GROUPS} for k, v in screener.FILTERABLE.items()],
+            "groups": list(screener.FIELD_GROUPS) + ["Other"], "operators": list(screener.OPS), "quick": screener.QUICK}
+
+
+@router.get("/screener/saved")
+def saved_screens(request: Request):
+    return {"screens": screener.list_saved(terminal_of(request).db)}
+
+
+@router.post("/screener/saved")
+def save_screen(request: Request, body: dict = Body(...)):
+    try:
+        return screener.save_screen(terminal_of(request).db, str(body.get("name") or ""), body.get("filters") or [],
+                                    str(body.get("sort") or "volume_ratio"), bool(body.get("descending", True)))
+    except screener.ScreenError as e:
+        raise bad_request(e) from None
+
+
+@router.delete("/screener/saved/{screen_id}")
+def delete_saved_screen(request: Request, screen_id: str):
+    if not screener.delete_saved(terminal_of(request).db, screen_id):
+        raise HTTPException(404, "no such saved screen")
+    return {"deleted": screen_id}
 
 
 @router.get("/screener/presets")

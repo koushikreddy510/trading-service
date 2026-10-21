@@ -54,6 +54,9 @@ METRICS: dict[str, str] = {
     "golden_cross": "50-day average crossed above the 200-day within 5 days: 1; crossed below: -1; else 0",
     "supertrend_dir": "Supertrend(10,3) direction: 1 up, -1 down",
     "supertrend_value": "Supertrend(10,3) line",
+    "supertrend_52_dir": "Supertrend(5,2) direction: 1 up, -1 down",
+    "st_agree": "Supertrend(10,3) and (5,2) agree: 1 both up, -1 both down, 0 mixed",
+    "st_agree_fresh": "Both Supertrends started agreeing within the last 3 sessions: 1 up, -1 down, else 0",
     "bars": "Daily bars available",
 }
 EXTRA_COLUMNS = {"market_cap": "Market cap (from the symbols table)"}
@@ -62,7 +65,81 @@ FILTERABLE = {**METRICS, **FUNDAMENTALS, **EXTRA_COLUMNS}
 UNITS: dict[str, str] = {
     **FUND_UNITS, "close": "price", "change_pct": "pct2", "ret_20d": "pct", "ret_60d": "pct", "ret_120d": "pct", "pct_from_52w_high": "pct", "pct_from_52w_low": "pct",
     "atr_pct": "pct", "volume_ratio": "mult", "volume_ratio_5d": "mult", "rsi_14": "int", "market_cap": "cr", "golden_cross": "int", "supertrend_dir": "int",
+    "supertrend_52_dir": "int", "st_agree": "int", "st_agree_fresh": "int",
 }
+
+# The field picker's groups, in order (technical first, then fundamentals). A field not listed lands in "Other".
+FIELD_GROUPS: dict[str, list[str]] = {
+    "Price": ["close", "change_pct", "market_cap"],
+    "Trend": ["ema_20", "ema_50", "sma_50", "sma_200", "golden_cross", "supertrend_dir", "supertrend_52_dir", "st_agree", "st_agree_fresh", "supertrend_value"],
+    "Momentum": ["rsi_14", "ret_20d", "ret_60d", "ret_120d"],
+    "Volume": ["volume", "avg_volume_20", "volume_ratio", "volume_ratio_5d"],
+    "Volatility": ["atr_14", "atr_pct"],
+    "52-week range": ["high_52w", "low_52w", "pct_from_52w_high", "pct_from_52w_low"],
+    "Valuation": ["pe_ratio", "pb_ratio", "earnings_yield_pct", "peg_ratio", "pe_avg_eps", "dividend_yield"],
+    "Profitability": ["roce_pct", "roe_pct", "q_opm_pct", "q_opm_change", "magic_rank"],
+    "Growth": ["sales_cagr_3y", "profit_cagr_3y", "rev_growth_min_3y"],
+    "Quarterly results": ["q_net_profit", "q_revenue_yoy_pct", "q_profit_yoy_pct", "q_revenue_qoq_pct", "q_profit_qoq_pct", "q_growth_streak", "q_turnaround"],
+    "Safety": ["interest_cover", "interest_change_pct"],
+    "Data": ["bars", "eps_years"],
+}
+TECHNICAL_GROUPS = {"Price", "Trend", "Momentum", "Volume", "Volatility", "52-week range", "Data"}
+
+
+def group_of(field: str) -> str:
+    return next((g for g, fields in FIELD_GROUPS.items() if field in fields), "Other")
+
+
+# One-click building blocks for a custom screen (each adds its filters; mix freely with others).
+QUICK: list[dict[str, Any]] = [
+    {"label": "Close above SMA 200", "kind": "technical", "filters": [{"field": "close", "op": ">", "value": {"field": "sma_200"}}]},
+    {"label": "Close above EMA 20", "kind": "technical", "filters": [{"field": "close", "op": ">", "value": {"field": "ema_20"}}]},
+    {"label": "SMA 50 above SMA 200", "kind": "technical", "filters": [{"field": "sma_50", "op": ">", "value": {"field": "sma_200"}}]},
+    {"label": "Golden cross (last 5 days)", "kind": "technical", "filters": [{"field": "golden_cross", "op": "=", "value": 1}]},
+    {"label": "Death cross (last 5 days)", "kind": "technical", "filters": [{"field": "golden_cross", "op": "=", "value": -1}]},
+    {"label": "Supertrend 10,3 up", "kind": "technical", "filters": [{"field": "supertrend_dir", "op": "=", "value": 1}]},
+    {"label": "Both Supertrends up", "kind": "technical", "filters": [{"field": "st_agree", "op": "=", "value": 1}]},
+    {"label": "Both Supertrends down", "kind": "technical", "filters": [{"field": "st_agree", "op": "=", "value": -1}]},
+    {"label": "Supertrends just turned up together", "kind": "technical", "filters": [{"field": "st_agree_fresh", "op": "=", "value": 1}]},
+    {"label": "RSI 40 to 60", "kind": "technical", "filters": [{"field": "rsi_14", "op": ">=", "value": 40}, {"field": "rsi_14", "op": "<=", "value": 60}]},
+    {"label": "RSI oversold (< 30)", "kind": "technical", "filters": [{"field": "rsi_14", "op": "<", "value": 30}]},
+    {"label": "Volume above 1.5× average", "kind": "technical", "filters": [{"field": "volume_ratio", "op": ">", "value": 1.5}]},
+    {"label": "Within 5% of 52-week high", "kind": "technical", "filters": [{"field": "pct_from_52w_high", "op": ">=", "value": -5}]},
+    {"label": "Price ₹10 to ₹100", "kind": "technical", "filters": [{"field": "close", "op": ">=", "value": 10}, {"field": "close", "op": "<=", "value": 100}]},
+    {"label": "Market cap above ₹1,000 Cr", "kind": "fundamental", "filters": [{"field": "market_cap", "op": ">", "value": 1000}]},
+    {"label": "ROCE above 15%", "kind": "fundamental", "filters": [{"field": "roce_pct", "op": ">", "value": 15}]},
+    {"label": "ROE above 15%", "kind": "fundamental", "filters": [{"field": "roe_pct", "op": ">", "value": 15}]},
+    {"label": "P/E below 25", "kind": "fundamental", "filters": [{"field": "pe_ratio", "op": ">", "value": 0}, {"field": "pe_ratio", "op": "<", "value": 25}]},
+    {"label": "Quarterly profit growth above 20% yoy", "kind": "fundamental", "filters": [{"field": "q_profit_yoy_pct", "op": ">", "value": 20}]},
+    {"label": "Sales growing 3 years (min > 10%)", "kind": "fundamental", "filters": [{"field": "rev_growth_min_3y", "op": ">", "value": 10}]},
+    {"label": "Interest cover above 3", "kind": "fundamental", "filters": [{"field": "interest_cover", "op": ">", "value": 3}]},
+]
+
+
+def list_saved(db: Database) -> list[dict]:
+    rows = db.rows("SELECT id, name, filters, sort, descending FROM terminal_saved_screens ORDER BY name")
+    return [dict(r) for r in rows]
+
+
+def save_screen(db: Database, name: str, filters: Sequence[Mapping[str, Any]], sort: str, descending: bool) -> dict:
+    """Validate (by running it once on nothing) and store a named custom screen; the same name replaces it."""
+    from .db import jdump, new_id
+
+    name = (name or "").strip()[:60]
+    if not name:
+        raise ScreenError("a saved screen needs a name")
+    run_screen(db, filters, sort, descending, 1, run_date=date(1900, 1, 1))       # rejects bad filters
+    sid = db.scalar("SELECT id FROM terminal_saved_screens WHERE lower(name) = lower(:n)", n=name) or new_id()
+    db.execute(
+        """INSERT INTO terminal_saved_screens (id, name, filters, sort, descending) VALUES (:i, :n, CAST(:f AS JSONB), :s, :d)
+           ON CONFLICT (id) DO UPDATE SET filters = EXCLUDED.filters, sort = EXCLUDED.sort, descending = EXCLUDED.descending, updated_at = now()""",
+        i=sid, n=name, f=jdump(list(filters)), s=sort, d=bool(descending),
+    )
+    return {"id": sid, "name": name, "filters": list(filters), "sort": sort, "descending": bool(descending)}
+
+
+def delete_saved(db: Database, screen_id: str) -> bool:
+    return bool(db.execute("DELETE FROM terminal_saved_screens WHERE id = :i", i=screen_id))
 OPS = {">": ">", ">=": ">=", "<": "<", "<=": "<=", "=": "=", "!=": "<>"}
 
 
@@ -113,6 +190,9 @@ def compute_metrics(bars: Sequence[Candle]) -> Optional[dict[str, Any]]:
         elif gap[k - 1] >= 0 > gap[k]:
             cross = -1
     st_dir = _last(st["direction"])
+    st52 = ind.supertrend(h, l, c, 5, 2.0)["direction"]
+    agree = np.where((st["direction"] > 0) & (st52 > 0), 1, np.where((st["direction"] < 0) & (st52 < 0), -1, 0))
+    fresh = int(agree[-1]) if n >= 4 and agree[-1] != 0 and any(agree[-4:-1] != agree[-1]) else 0
 
     def ret(days: int) -> Optional[float]:
         return _pct(close, float(c[-1 - days])) if n > days else None
@@ -141,6 +221,9 @@ def compute_metrics(bars: Sequence[Candle]) -> Optional[dict[str, Any]]:
         "ret_120d": ret(120),
         "supertrend_dir": int(st_dir) if st_dir is not None else None,
         "supertrend_value": _last(st["line"]),
+        "supertrend_52_dir": int(st52[-1]) if not math.isnan(st52[-1]) else None,
+        "st_agree": int(agree[-1]),
+        "st_agree_fresh": fresh,
         "bars": n,
         "asof": bars[-1].time,
     }
