@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 from .db import Database, new_id
@@ -95,9 +95,34 @@ class OrderRepo:
     def get(self, order_id: str) -> Optional[dict]:
         return self.db.row("SELECT * FROM terminal_orders WHERE id = :i", i=order_id)
 
-    def today(self) -> list[dict]:
-        start = datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0)
+    def today(self, days: int = 1) -> list[dict]:
+        start = datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=max(1, days) - 1)
         return self.db.rows("SELECT * FROM terminal_orders WHERE created_at >= :s ORDER BY created_at DESC", s=start)
+
+    def positions(self) -> list[dict]:
+        """What this app holds, from its own fills only (average-cost method). Intraday counts today's orders only."""
+        today = datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0)
+        rows = self.db.rows("SELECT * FROM terminal_orders WHERE filled_units > 0 AND (product <> 'I' OR created_at >= :d) "
+                            "ORDER BY created_at", d=today)
+        book: dict[tuple, dict] = {}
+        for r in rows:
+            k = (r["account"], r["symbol"], r["product"])
+            pos = book.setdefault(k, {"account": k[0], "symbol": k[1], "product": k[2], "units": 0, "avg_price": 0.0, "realized": 0.0,
+                                      "per_qty": max(1, r["units"] // max(1, r["quantity"]))})
+            signed = r["filled_units"] if r["side"] == "BUY" else -r["filled_units"]
+            px = r["avg_price"] or r["price"]
+            if pos["units"] == 0 or (pos["units"] > 0) == (signed > 0):          # opening or adding
+                total = pos["units"] + signed
+                pos["avg_price"] = (pos["avg_price"] * abs(pos["units"]) + px * abs(signed)) / abs(total)
+                pos["units"] = total
+            else:                                                                   # reducing (or flipping)
+                closing = min(abs(signed), abs(pos["units"]))
+                pos["realized"] += closing * (px - pos["avg_price"]) * (1 if pos["units"] > 0 else -1)
+                left = pos["units"] + signed
+                if left and (left > 0) != (pos["units"] > 0):
+                    pos["avg_price"] = px
+                pos["units"] = left
+        return list(book.values())
 
     def open(self) -> list[dict]:
         return self.db.rows("SELECT * FROM terminal_orders WHERE status IN ('submitting', 'open') ORDER BY created_at")
@@ -307,5 +332,22 @@ class OrderService:
                         self.notify(f"{icon} *Order {b['status']}* {account} · {o['side']} {o['quantity']} {o['symbol']}{extra}")
         return changed
 
-    def today(self) -> list[dict]:
-        return [_json(o) for o in self.repo.today()]
+    def today(self, days: int = 1) -> list[dict]:
+        return [_json(o) for o in self.repo.today(days)]
+
+    def positions(self, mark: Callable[[str], Optional[float]] = lambda s: None) -> list[dict]:
+        """Our live positions with the last price, unrealised P&L and the open stops protecting each."""
+        open_orders = self.repo.open()
+        out = []
+        for p in self.repo.positions():
+            ltp = mark(p["symbol"])
+            p["quantity"] = abs(p["units"]) // p["per_qty"]
+            p["side"] = "BUY" if p["units"] > 0 else "SELL" if p["units"] < 0 else None
+            p["ltp"] = ltp
+            p["unrealized"] = round((ltp - p["avg_price"]) * p["units"], 2) if ltp and p["units"] else 0.0
+            p["realized"] = round(p["realized"], 2)
+            p["avg_price"] = round(p["avg_price"], 4)
+            p["stops"] = [{"id": o["id"], "trigger_price": o["trigger_price"], "quantity": o["quantity"]} for o in open_orders
+                          if o["trigger_price"] and o["symbol"] == p["symbol"] and o["product"] == p["product"] and o["account"] == p["account"]]
+            out.append(p)
+        return sorted(out, key=lambda x: (x["units"] == 0, x["symbol"]))

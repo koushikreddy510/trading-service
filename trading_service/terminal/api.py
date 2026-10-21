@@ -133,9 +133,19 @@ def order_call(fn, *args, **kwargs):
 
 
 @router.get("/orders")
-def list_orders(request: Request):
-    """Today's live orders from our ledger (only orders this app sent)."""
-    return {"orders": terminal_of(request).orders.today()}
+def list_orders(request: Request, days: int = Query(1, ge=1, le=90)):
+    """Live orders from our ledger (only orders this app sent): today, or the last `days` days."""
+    return {"orders": terminal_of(request).orders.today(days)}
+
+
+@router.get("/live-positions")
+def live_positions(request: Request):
+    """What this app holds through its own filled orders (not positions made elsewhere), with live P&L."""
+    t = terminal_of(request)
+    def mark(symbol: str):
+        q = t.quotes.get(symbol)
+        return q.price if q else None
+    return {"positions": t.orders.positions(mark)}
 
 
 @router.post("/orders")
@@ -150,9 +160,11 @@ async def place_order(request: Request, body: dict = Body(...)):
     except (TypeError, ValueError):
         raise HTTPException(400, "quantity and prices must be numbers") from None
     t = terminal_of(request)
-    return await asyncio.to_thread(order_call, t.orders.place, str(body.get("account") or "flattrade"), symbol_param(body.get("symbol")),
-                                   str(body.get("side") or ""), quantity, str(body.get("product") or ""),
-                                   str(body.get("price_type") or "LMT"), price, "ticket", trigger)
+    row = await asyncio.to_thread(order_call, t.orders.place, str(body.get("account") or "flattrade"), symbol_param(body.get("symbol")),
+                                  str(body.get("side") or ""), quantity, str(body.get("product") or ""),
+                                  str(body.get("price_type") or "LMT"), price, "ticket", trigger)
+    await t.refresh_background_subscriptions()            # live P&L for what we now hold
+    return row
 
 
 @router.post("/orders/{order_id}/modify")

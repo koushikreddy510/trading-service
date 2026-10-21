@@ -343,3 +343,20 @@ ALTER TABLE terminal_rules ADD COLUMN IF NOT EXISTS execution JSONB;            
 ALTER TABLE terminal_orders ADD COLUMN IF NOT EXISTS link TEXT;                -- the paper position a rule's live order mirrors
 ALTER TABLE terminal_orders ADD COLUMN IF NOT EXISTS purpose TEXT;             -- entry | stop | exit (rule orders)
 CREATE INDEX IF NOT EXISTS idx_terminal_orders_link ON terminal_orders (link);
+
+-- A rule's paper position mirrored with live orders (live_mirror.py). state: live | closed | refused | skipped | failed
+CREATE TABLE IF NOT EXISTS terminal_live_links (
+    position_id   TEXT PRIMARY KEY,
+    rule_id       TEXT,
+    account       TEXT NOT NULL,
+    product       TEXT NOT NULL,
+    symbol        TEXT NOT NULL,
+    side          TEXT NOT NULL,
+    last_stop     DOUBLE PRECISION,
+    stop_order_id TEXT,
+    partial_done  BOOLEAN NOT NULL DEFAULT false,
+    state         TEXT NOT NULL,
+    note          TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);

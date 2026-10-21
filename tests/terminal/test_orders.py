@@ -197,3 +197,17 @@ def test_a_trailing_step_moves_the_same_broker_order(setup):
     moved = svc.modify_stop(stop["id"], 955.0)
     assert calls == [(stop["broker_order_id"], 955.0)] and moved["trigger_price"] == 955.0 and len(broker.sent) == 2
     assert any("Stop moved" in t for t in sent)
+
+
+def test_live_positions_come_from_our_fills_with_average_cost_and_pnl(setup):
+    svc, broker, _ = setup
+    _hold(svc, broker, 2, price=950.0)
+    _hold(svc, broker, 2, price=960.0)                       # average 955 for 4
+    svc.place("flattrade", "NSE:SBIN-EQ", "SELL", 1, "I", "LMT", 970.0)
+    broker.book["B3"].update(status="complete", filled_units=1, avg_price=970.0)
+    svc.sync()
+    broker.positions[("NSE:SBIN-EQ", "I")] = 3                # the broker agrees: 3 left, all ours
+    svc.place("flattrade", "NSE:SBIN-EQ", "SELL", 1, "I", "SL", trigger_price=940.0)
+    (p,) = svc.positions(lambda s: 965.0)
+    assert (p["side"], p["units"], p["avg_price"], p["realized"]) == ("BUY", 3, 955.0, 15.0)
+    assert p["unrealized"] == pytest.approx(30.0) and [s["trigger_price"] for s in p["stops"]] == [940.0]

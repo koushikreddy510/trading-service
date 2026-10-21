@@ -34,6 +34,7 @@ from .instruments import Instruments
 from .market import CandleService
 from .paper import PaperBook
 from .rules import RuleRepo, SignalRepo
+from .live_mirror import LiveMirror
 from .orders import OrderService
 from .sessions import BrokerLogins, SessionStore
 from .notify import Notifier
@@ -45,6 +46,7 @@ log = logging.getLogger(__name__)
 
 RULES_SOURCE = "rules"          # symbols that must stay subscribed so rules keep evaluating
 POSITIONS_SOURCE = "positions"  # symbols with an open paper position (their stops need ticks)
+LIVE_SOURCE = "live"            # symbols this app holds or has open orders in (live P&L needs ticks)
 BACKFILL_COOLDOWN = timedelta(seconds=60)
 REPAIR_MARGIN = timedelta(minutes=2)   # re-fetch a little before the outage began: the minute it dropped in is a partial bar
 ORDER_SYNC_SECONDS = 3.0              # how often open live orders are refreshed from the broker
@@ -89,6 +91,8 @@ class Terminal:
             notify=lambda text: self.notifier.send(text, channel="orders"),
             broadcast=self.hub.broadcast,
         )
+        self.mirror = LiveMirror(db, self.orders, notify=lambda text: self.notifier.send(text, channel="orders"), clock=clock)
+        self.hub.listeners.append(self.mirror.on_event)
         self._tasks: list[asyncio.Task] = []
         self._backfilled: dict[str, datetime] = {}
         self._lost_at: Optional[datetime] = None      # when the live feed was last seen going down (None = it is up, or never was)
@@ -103,6 +107,7 @@ class Terminal:
             asyncio.create_task(self._run_feed(), name="terminal-feed"),
             asyncio.create_task(self._flush_loop(), name="terminal-flush"),
             asyncio.create_task(self._order_loop(), name="terminal-orders"),
+            asyncio.create_task(self._cutoff_loop(), name="terminal-intraday-cutoff"),
         ]
 
     async def apply_tokens(self, broker: str, tokens: dict) -> None:
@@ -157,10 +162,36 @@ class Terminal:
         while True:
             try:
                 if self.orders.repo.open():
-                    await asyncio.to_thread(self.orders.sync)
+                    if await asyncio.to_thread(self.orders.sync):
+                        await self.refresh_background_subscriptions()
             except Exception:
                 log.exception("order sync failed")
             await asyncio.sleep(ORDER_SYNC_SECONDS)
+
+    async def _cutoff_loop(self) -> None:
+        while True:
+            try:
+                self.close_for_cutoff()
+            except Exception:
+                log.exception("intraday cut-off failed")
+            await asyncio.sleep(30)
+
+    def close_for_cutoff(self) -> list[dict]:
+        """Close live-mirrored intraday positions at the cut-off: the paper position closes at the last price and the
+        mirror closes the live side exactly as for any other exit."""
+        events = []
+        for link in self.mirror.due_for_cutoff():
+            p = next((x for x in self.book.open_positions(link["symbol"]) if x.id == link["position_id"]), None)
+            if p is None:
+                continue
+            q = self.quotes.get(p.symbol)
+            closed = self.book.close(p, q.price if q else p.entry_price, "intraday_cutoff", self.clock())
+            event = {"type": "position", "position": closed.to_json()}
+            self.hub.broadcast(event)
+            events.append(event)
+        if events:
+            self._spawn(self.refresh_background_subscriptions())
+        return events
 
     async def _flush_loop(self) -> None:
         while True:
@@ -184,7 +215,8 @@ class Terminal:
         whether or not any browser is connected."""
         rule_syms = self._rule_symbols()
         position_syms = {p.symbol for p in self.book.open_positions()}
-        for name, wanted in ((RULES_SOURCE, rule_syms), (POSITIONS_SOURCE, position_syms)):
+        live_syms = {p["symbol"] for p in self.orders.repo.positions() if p["units"]} | {o["symbol"] for o in self.orders.repo.open()}
+        for name, wanted in ((RULES_SOURCE, rule_syms), (POSITIONS_SOURCE, position_syms), (LIVE_SOURCE, live_syms)):
             await self._apply(*self.subs.set_source(name, wanted))
 
     async def _apply(self, newly: list[str], gone: list[str]) -> None:
