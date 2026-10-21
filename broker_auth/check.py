@@ -29,7 +29,9 @@ def check_flattrade(env: Mapping[str, str], http: Http) -> tuple[str, str]:
     user, token = env.get("FLATTRADE_USER_ID", ""), env.get("FLATTRADE_TOKEN", "")
     if not token:
         return "not_configured", ""
-    code, body = http("POST", "https://piconnect.flattrade.in/PiConnectAPI/UserDetails", data={"jData": json.dumps({"uid": user}), "jKey": token})
+    # a raw body, like the terminal's client: Flattrade rejects URL-encoded JSON ("jData is not valid json object")
+    raw = f"jData={json.dumps({'uid': user}, separators=(',', ':'))}&jKey={token}"
+    code, body = http("POST", "https://piconnect.flattrade.in/PiConnectAPI/UserDetails", data=raw.encode())
     if isinstance(body, dict) and str(body.get("stat", "")).lower() == "ok":
         return "valid", ""
     if isinstance(body, dict) and body.get("emsg"):

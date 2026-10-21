@@ -117,3 +117,13 @@ def test_slack_text_names_the_command_only_when_a_person_is_needed():
     bad = {**ok, "flattrade": {"status": "rejected", "detail": "expired"}, "fyers": {"status": "rejected", "detail": "x"}}
     text = check.alert_text(bad)
     assert "python -m broker_auth flattrade" in text and "refreshes it automatically" in text and "paytm" not in text
+
+
+def test_the_token_check_sends_flattrade_raw_json_not_url_encoded():
+    from broker_auth.check import check_flattrade
+    seen = {}
+    def http(method, url, **kw):
+        seen.update(kw)
+        return 200, {"stat": "Ok"}
+    assert check_flattrade({"FLATTRADE_USER_ID": "FT1", "FLATTRADE_TOKEN": "tok"}, http) == ("valid", "")
+    assert seen["data"] == b'jData={"uid":"FT1"}&jKey=tok'
