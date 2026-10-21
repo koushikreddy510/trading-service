@@ -12,9 +12,11 @@ from trading_service.terminal.hub import Subscriptions
 class Slack:
     def __init__(self):
         self.sent = []
+        self.channels = []
 
-    def __call__(self, text, account="default"):
+    def __call__(self, text, account="default", channel="orders"):
         self.sent.append((account, text))
+        self.channels.append(channel)
 
     @property
     def texts(self):
@@ -60,9 +62,26 @@ class TestTradeMessages:
         notifier.on_event({"type": "position", "position": h.book.close(p, 99.0, "exit_rule").to_json()})
         assert slack.texts[0].startswith("🔻 *Paper EXIT* (exit rule)") and "-20.00" in slack.texts[0]
 
-    def test_a_skipped_signal_says_why(self, notifier, slack):
+    def test_a_skipped_signal_stays_out_of_slack(self, notifier, slack):
         notifier.on_event({"type": "signal", "signal": {"id": "s", "status": "rejected", "side": "BUY", "symbol": SYMBOL, "timeframe": "1H", "reason": "stop is above entry"}})
-        assert slack.texts == ["⚪ Paper signal skipped: BUY SBIN 1H - stop is above entry"]
+        assert slack.sent == []
+
+    def test_trades_go_to_the_orders_channel(self, db, notifier, slack):
+        for e in Harness(db).close_bar():
+            notifier.on_event(e)
+        assert slack.channels == ["orders"]
+
+    def test_a_partial_exit_is_announced_once_and_the_final_exit_after_it(self, db, notifier, slack):
+        h = Harness(db)
+        h.close_bar()
+        (p,) = h.book.open_positions()
+        slack.sent.clear()
+        half = h.book.partial_close(p, 104.0, "exit_rule_1").to_json()
+        notifier.on_event({"type": "position", "position": half})
+        notifier.on_event({"type": "position", "position": half})          # e.g. a trail move afterwards: nothing new
+        assert slack.texts == ["✅ *Paper PARTIAL EXIT* (exit rule 1) BUY 5 SBIN 101.00 → 104.00 · P&L +15.00 · 5 left for exit rule 2"]
+        notifier.on_event({"type": "position", "position": h.book.close(p, 105.0, "exit_rule_2").to_json()})
+        assert len(slack.texts) == 2 and slack.texts[1].startswith("✅ *Paper EXIT* (exit rule 2) BUY 5 SBIN")
 
     def test_bars_and_quotes_say_nothing(self, notifier, slack):
         notifier.on_event({"type": "bar_closed"})
@@ -78,13 +97,25 @@ class TestTradeMessages:
         monkeypatch.setenv("SLACK_WEBHOOK_URL_ZERODHA", "https://hooks/zerodha")
         assert webhook_for() == "https://hooks/shared" and webhook_for("zerodha") == "https://hooks/zerodha" and webhook_for("other") == "https://hooks/shared"
 
+    def test_jobs_and_data_have_their_own_webhooks_and_fall_back_to_the_shared_one(self, monkeypatch):
+        from trading_service.slack_notify import webhook_for
+        monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks/orders")
+        monkeypatch.delenv("SLACK_DATA_WEBHOOK_URL", raising=False)
+        monkeypatch.setenv("SLACK_JOBS_WEBHOOK_URL", "https://hooks/jobs")
+        assert webhook_for(channel="jobs") == "https://hooks/jobs"
+        assert webhook_for(channel="data") == "https://hooks/orders"
+        assert webhook_for(channel="orders") == "https://hooks/orders"
+
 
 class TestHubIntegration:
-    def test_every_broadcast_reaches_the_listener_and_a_broken_listener_breaks_nothing(self, notifier, slack):
+    def test_every_broadcast_reaches_the_listener_and_a_broken_listener_breaks_nothing(self, db, notifier, slack):
+        h = Harness(db)
+        h.close_bar()
+        (p,) = h.book.open_positions()
         hub = Hub(Subscriptions(), QuoteBoard())
         hub.listeners.append(lambda e: 1 / 0)
         hub.listeners.append(notifier.on_event)
-        hub.broadcast({"type": "signal", "signal": {"id": "s", "status": "rejected", "side": "SELL", "symbol": SYMBOL, "timeframe": "1H", "reason": "x"}})
+        hub.broadcast({"type": "position", "position": h.book.close(p, 104.0, "target").to_json()})
         assert len(slack.sent) == 1
 
     def test_a_terminal_wires_its_notifier_to_its_hub(self, db):
@@ -106,12 +137,13 @@ class TestOtherMessages:
 
     def test_a_failed_backtest(self, notifier, slack):
         notifier.backtest_done({"status": "failed", "error": "boom"})
-        assert slack.texts == ["⚠️ Backtest failed: boom"]
+        assert slack.texts == ["⚠️ Backtest failed: boom"] and slack.channels == ["jobs"]
 
     def test_a_sync_lists_what_changed(self, notifier, slack):
         notifier.sync_result({"watchlist": {"name": "Screen: Momentum"}, "created": False, "matched": 12, "near": 3,
                               "added": ["NSE:TCS-EQ", "NSE:INFY-EQ"], "removed": ["NSE:SBIN-EQ"], "kept_for_trading": ["NSE:ITC-EQ"]})
         assert slack.texts == ["🔄 *Screener sync* “Screen: Momentum”: 12 match, 3 near\n  added: TCS, INFY\n  removed: SBIN\n  kept (open position or rule): ITC"]
+        assert slack.channels == ["data"]
 
     def test_a_sync_without_changes_says_so(self, notifier, slack):
         notifier.sync_result({"watchlist": {"name": "W"}, "created": True, "matched": 0, "near": 0, "added": [], "removed": []})
@@ -120,12 +152,13 @@ class TestOtherMessages:
     def test_the_daily_refresh_reports_each_strategy_and_its_failures(self, notifier, slack):
         notifier.sync_refresh([{"strategy_id": 4, "ok": True, "added": 2, "removed": 1, "matched": 9, "near": 2}, {"strategy_id": 7, "ok": False, "error": "screener down"}])
         assert slack.texts == ["🔄 *Screener sync (daily)*\n  strategy 4: +2 −1 · 9 match, 2 near\n  strategy 7: ⚠️ screener down"]
+        assert slack.channels == ["data"]
 
     def test_a_long_list_is_cut_short(self):
         assert notify.names([f"NSE:S{i}-EQ" for i in range(20)]).endswith("and 5 more")
 
     def test_a_slack_outage_is_swallowed(self):
-        def down(text, account="default"):
+        def down(text, account="default", channel="orders"):
             raise ConnectionError("no route")
         Notifier(sender=down, background=False).send("hello")
 
@@ -171,7 +204,7 @@ class TestDataDigest:
         app.state.terminal = Terminal(db, MockFeed(clock), MockHistory(), clock.now, mode="flattrade", hub_interval=0, notifier=Notifier(sender=slack, background=False))
         with TestClient(app) as c:
             body = c.post("/terminal/notify/data-digest").json()
-        assert "screener" in body and slack.texts[0].startswith("🗂 *Daily data digest*")
+        assert "screener" in body and slack.texts[0].startswith("🗂 *Daily data digest*") and slack.channels == ["data"]
 
 
 class TestBrokerTokenCheck:

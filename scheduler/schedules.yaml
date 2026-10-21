@@ -79,6 +79,7 @@ jobs:
     schedule: "15 8 * * 1-5"
     url: /terminal/notify/broker-tokens
     method: POST
+    slack: failures   # it posts its own message; a second 'finished' is noise
 
   # --- TERMINAL (screener scan, linked watchlists, Slack data digest) ---
   - id: terminal_screener_scan
@@ -96,6 +97,7 @@ jobs:
     schedule: "30 16 * * 1-5"
     url: /terminal/screener-sync/refresh
     method: POST
+    slack: failures   # it posts its own message; a second 'finished' is noise
 
   - id: terminal_data_digest
     name: Daily data digest (Slack)
@@ -104,6 +106,7 @@ jobs:
     schedule: "0 21 * * 1-5"
     url: /terminal/notify/data-digest
     method: POST
+    slack: failures   # it posts its own message; a second 'finished' is noise
 
   # --- SCREENING & AI ---
   - id: daily_ai_report
@@ -150,6 +153,7 @@ jobs:
     schedule: "*/5 9-15 * * 1-5"
     url: /admin/sync-positions
     method: POST
+    slack: failures   # every 5 min: only a failure is worth a message
 
   - id: sync_pnl
     name: Sync PnL snapshots

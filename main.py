@@ -12,6 +12,9 @@ from fastapi.responses import Response
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
+
+load_dotenv()  # a local .env (Slack webhooks etc.); already-exported variables win, and Docker has no .env file
 
 
 @asynccontextmanager

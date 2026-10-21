@@ -36,8 +36,9 @@ DATA_STORE_URL = os.getenv("DATA_STORE_URL", "http://data-store:8003")
 DATA_STORE_DIR = os.getenv("DATA_STORE_DIR", "/app/data-store")
 HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", "600"))  # 10 min for long jobs
 JOB_LOG = {}  # in-memory job log (last run per job_id)
-SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL") or os.getenv("TRADING_SLACK_WEBHOOK_URL")
-SLACK_JOBS_NOTIFY = os.getenv("SLACK_JOBS_NOTIFY", "all").lower()  # all | failures | off
+SLACK_WEBHOOK_URL = os.getenv("SLACK_JOBS_WEBHOOK_URL") or os.getenv("SLACK_WEBHOOK_URL") or os.getenv("TRADING_SLACK_WEBHOOK_URL")
+SLACK_JOBS_NOTIFY = os.getenv("SLACK_JOBS_NOTIFY", "all").lower()  # all | failures | off; a job's `slack:` overrides it
+JOB_SLACK = {}  # job_id -> its own `slack:` setting from schedules.yaml
 RUNS_DB = os.getenv("JOB_RUNS_DB", "/data/job_runs.db")  # run history; a docker volume keeps it across restarts and deploys
 RUNS_KEEP = 2000                                         # newest rows kept; older ones are deleted on write
 
@@ -102,7 +103,8 @@ def _report(job_id: str, started: float) -> None:
     job = scheduler.get_job(job_id)
     detail = entry.get("result") if ok else (entry.get("error") or entry.get("stderr") or f"exit {entry.get('returncode')}")
     _record_run(job_id, job.name if job else job_id, entry, detail)
-    if SLACK_JOBS_NOTIFY == "off" or (ok and SLACK_JOBS_NOTIFY == "failures"):
+    notify = JOB_SLACK.get(job_id, SLACK_JOBS_NOTIFY)
+    if notify == "off" or (ok and notify == "failures"):
         return
     _slack(f"{'✅' if ok else '❌'} *{job.name if job else job_id}* (`{job_id}`) {'finished' if ok else 'FAILED'} in {entry['seconds']}s"
            + (f"\n```{detail}```" if detail else ""))
@@ -194,6 +196,8 @@ def _register_jobs(config: dict):
             logger.warning(f"Job {jid}: invalid cron '{cron}', skip")
             continue
 
+        if job.get("slack"):
+            JOB_SLACK[jid] = str(job["slack"]).lower()
         jtype = job.get("type", "http")
         trigger = CronTrigger(
             minute=parts[0],

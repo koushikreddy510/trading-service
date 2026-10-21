@@ -572,7 +572,7 @@ def notify_data_digest(request: Request):
     """Post the daily data digest to Slack (a scheduled job calls this) and return it."""
     t = terminal_of(request)
     digest = data_digest(t.db)
-    t.notifier.send(digest_text(digest))
+    t.notifier.send(digest_text(digest), channel="data")
     return digest
 
 
@@ -584,7 +584,7 @@ def notify_broker_tokens(request: Request):
     results = check_all()
     text = alert_text(results)
     if text:
-        t.notifier.send(text)
+        t.notifier.send(text, channel="jobs")
     return results
 
 

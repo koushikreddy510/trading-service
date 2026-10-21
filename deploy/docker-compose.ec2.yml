@@ -63,6 +63,7 @@ services:
       FYERS_REDIRECT_URI: ${FYERS_REDIRECT_URI:-https://www.google.com/}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      SLACK_DATA_WEBHOOK_URL: ${SLACK_DATA_WEBHOOK_URL:-}
     volumes:
       - ../../data-store:/app/data-store
     ports:
@@ -87,6 +88,8 @@ services:
       PAYTM_PUBLIC_ACCESS_TOKEN: ${PAYTM_PUBLIC_ACCESS_TOKEN:-}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
       TRADING_SLACK_WEBHOOK_URL: ${TRADING_SLACK_WEBHOOK_URL:-}
+      SLACK_JOBS_WEBHOOK_URL: ${SLACK_JOBS_WEBHOOK_URL:-}
+      SLACK_DATA_WEBHOOK_URL: ${SLACK_DATA_WEBHOOK_URL:-}
       TRADING_FLATTRADE_USER: ${TRADING_FLATTRADE_USER:-}
       TRADING_FLATTRADE_TOKEN: ${TRADING_FLATTRADE_TOKEN:-}
     ports:
@@ -105,6 +108,8 @@ services:
       TRADING_URL: http://trading-service:8001
       DATA_STORE_URL: http://data-store:8003
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      SLACK_JOBS_WEBHOOK_URL: ${SLACK_JOBS_WEBHOOK_URL:-}
+      SLACK_JOBS_NOTIFY: ${SLACK_JOBS_NOTIFY:-all}
     volumes:
       - ../scheduler/schedules.yaml:/app/schedules.yaml:ro
       - scheduler_data:/data                           # run history (job_runs.db) survives restarts and deploys

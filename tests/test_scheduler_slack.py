@@ -10,11 +10,12 @@ pytest.importorskip("yaml")
 
 
 @pytest.fixture
-def sched(monkeypatch):
+def sched(monkeypatch, tmp_path):
     spec = importlib.util.spec_from_file_location("scheduler_main", Path(__file__).resolve().parent.parent / "scheduler" / "main.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     sent = []
+    monkeypatch.setattr(mod, "RUNS_DB", str(tmp_path / "runs.db"))   # never write a real history file from a test
     monkeypatch.setattr(mod, "SLACK_WEBHOOK_URL", "https://hooks.example/x")
     monkeypatch.setattr(mod.requests, "post", lambda url, json=None, timeout=None: sent.append((url, json["text"])) or SimpleNamespace(status_code=200))
     mod.sent = sent
@@ -54,6 +55,23 @@ def test_only_failures_mode_stays_quiet_on_success(sched, monkeypatch):
     monkeypatch.setattr(sched.requests, "get", lambda url, timeout=None: reply("{}"))
     sched._run_http_job("quiet", "http://x", "GET")
     assert sched.sent == []
+
+
+def test_a_job_can_ask_for_failures_only(sched, monkeypatch):
+    monkeypatch.setitem(sched.JOB_SLACK, "sync", "failures")
+    monkeypatch.setattr(sched.requests, "get", lambda url, timeout=None: reply("{}"))
+    sched._run_http_job("sync", "http://x", "GET")
+    assert sched.sent == []
+    monkeypatch.setattr(sched.requests, "get", lambda url, timeout=None: reply("down", 503))
+    sched._run_http_job("sync", "http://x", "GET")
+    assert sched.sent[0][1].startswith("❌ *sync*")
+
+
+def test_frequent_and_self_reporting_jobs_only_report_failures():
+    import yaml
+    jobs = {j["id"]: j for j in yaml.safe_load((Path(__file__).resolve().parent.parent / "scheduler" / "schedules.yaml").read_text())["jobs"]}
+    for jid in ("sync_positions", "broker_tokens_check", "terminal_screener_sync", "terminal_data_digest"):
+        assert jobs[jid]["slack"] == "failures"
 
 
 def test_a_missed_job_is_reported(sched):

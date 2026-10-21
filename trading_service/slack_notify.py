@@ -5,17 +5,24 @@ import os
 import requests
 from typing import Optional
 
-def webhook_for(account: str = "default") -> Optional[str]:
-    """The webhook for an account: SLACK_WEBHOOK_URL_<ACCOUNT> if set, else the shared one."""
-    if account and account != "default":
+CHANNEL_ENV = {"jobs": "SLACK_JOBS_WEBHOOK_URL", "data": "SLACK_DATA_WEBHOOK_URL"}  # "orders" uses the main webhook
+
+
+def webhook_for(account: str = "default", channel: str = "orders") -> Optional[str]:
+    """The webhook for a message: jobs / data go to their own channel when one is set; orders go to
+    SLACK_WEBHOOK_URL_<ACCOUNT> if set. Anything without its own webhook falls back to the shared one."""
+    own = os.getenv(CHANNEL_ENV[channel]) if channel in CHANNEL_ENV else None
+    if own:
+        return own
+    if channel == "orders" and account and account != "default":
         specific = os.getenv(f"SLACK_WEBHOOK_URL_{account.upper()}")
         if specific:
             return specific
     return os.getenv("SLACK_WEBHOOK_URL") or os.getenv("TRADING_SLACK_WEBHOOK_URL")
 
 
-def send_slack(text: str, webhook_url: Optional[str] = None, account: str = "default") -> bool:
-    url = webhook_url or webhook_for(account)
+def send_slack(text: str, webhook_url: Optional[str] = None, account: str = "default", channel: str = "orders") -> bool:
+    url = webhook_url or webhook_for(account, channel)
     if not url:
         return False
     try:
