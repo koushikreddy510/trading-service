@@ -64,6 +64,11 @@ class TestRest:
         with pytest.raises(BrokerError):
             parse_candle_time("yesterday")
 
+    def test_a_negative_minute_volume_is_stored_as_zero(self):
+        rows = [{"stat": "Ok", "time": "19-10-2026 15:21:00", "into": "161.59", "inth": "161.59", "intl": "161.59", "intc": "161.59", "intv": "-7578532"}]
+        (bar,) = parse_tpseries(rows)
+        assert bar.volume == 0 and bar.close == 161.59
+
     def test_tpseries_rows_are_parsed_sorted_oldest_first_and_deduplicated(self):
         rows = [  # the broker returns newest first, as strings
             {"stat": "Ok", "time": "19-10-2026 09:16:00", "into": "101", "inth": "102", "intl": "100", "intc": "101.5", "intv": "50"},

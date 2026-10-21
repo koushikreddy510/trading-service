@@ -120,13 +120,15 @@ def parse_candle_time(text: str) -> datetime:
 
 
 def parse_tpseries(rows: Sequence[dict]) -> list[Candle]:
-    """TPSeries returns newest-first rows of strings; entries with stat != Ok are skipped."""
+    """TPSeries returns newest-first rows of strings; entries with stat != Ok are skipped.
+    Its per-minute volume (`intv`) can come back negative in NSE's closing session (15:20-15:30, flat price); a minute
+    cannot trade fewer than zero shares, so that is stored as 0."""
     out: dict[datetime, Candle] = {}
     for r in rows:
         if str(r.get("stat", "Ok")).lower() != "ok":
             continue
         t = parse_candle_time(r["time"])
-        out[t] = Candle(t, float(r["into"]), float(r["inth"]), float(r["intl"]), float(r["intc"]), int(float(r.get("intv") or 0)))
+        out[t] = Candle(t, float(r["into"]), float(r["inth"]), float(r["intl"]), float(r["intc"]), max(0, int(float(r.get("intv") or 0))))
     return [out[t] for t in sorted(out)]
 
 
@@ -138,7 +140,7 @@ def parse_eod(rows: Sequence[Any], exchange: str) -> list[tuple[date, Candle]]:
         try:
             day = datetime.strptime(str(r["time"]).strip(), "%d-%b-%Y").date()
             out[day] = Candle(session_open(day, exchange), float(r["into"]), float(r["inth"]), float(r["intl"]), float(r["intc"]),
-                              int(float(r.get("intv") or 0)))
+                              max(0, int(float(r.get("intv") or 0))))
         except (KeyError, ValueError):
             continue
     return [(d, out[d]) for d in sorted(out)]
