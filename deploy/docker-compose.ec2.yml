@@ -82,7 +82,13 @@ services:
       TERMINAL_MODE: ${TERMINAL_MODE:-demo}            # demo = synthetic prices; flattrade = real feed
       FLATTRADE_USER_ID: ${FLATTRADE_USER_ID:-}
       FLATTRADE_ACCOUNT_ID: ${FLATTRADE_ACCOUNT_ID:-}
-      FLATTRADE_TOKEN: ${FLATTRADE_TOKEN:-}            # today's session token; it expires daily (python -m broker_auth)
+      FLATTRADE_TOKEN: ${FLATTRADE_TOKEN:-}            # optional: the app's own login (Data -> Broker logins) is stored in the DB and wins
+      FLATTRADE_API_KEY: ${FLATTRADE_API_KEY:-}
+      FLATTRADE_API_SECRET: ${FLATTRADE_API_SECRET:-}
+      FLATTRADE_PASSWORD: ${FLATTRADE_PASSWORD:-}      # with FLATTRADE_TOTP_KEY: unattended morning login (broker_auth/auto.py)
+      FLATTRADE_TOTP_KEY: ${FLATTRADE_TOTP_KEY:-}
+      PAYTM_API_KEY: ${PAYTM_API_KEY:-}
+      PAYTM_API_SECRET: ${PAYTM_API_SECRET:-}
       PAYTM_ACCESS_TOKEN: ${PAYTM_ACCESS_TOKEN:-}
       PAYTM_READ_ACCESS_TOKEN: ${PAYTM_READ_ACCESS_TOKEN:-}
       PAYTM_PUBLIC_ACCESS_TOKEN: ${PAYTM_PUBLIC_ACCESS_TOKEN:-}

@@ -85,7 +85,8 @@ def alert_text(results: dict[str, dict[str, str]]) -> str | None:
         if r["status"] == "unknown":
             lines.append(f"• *{name}*: could not check{why}")
         elif name in LOGIN:
-            lines.append(f"• *{name}*: today's token is not accepted{why}. Log in: `{LOGIN[name]}` then restart the service (`deploy.sh trading`)")
+            lines.append(f"• *{name}*: today's token is not accepted{why}. In the Workspace: Data → Broker logins → Log in now "
+                         f"(or paste the login page's redirect URL there). No restart needed")
         else:
             lines.append(f"• *{name}*: token is not valid{why}. The scheduler refreshes it automatically at 08:00; if this persists check FYERS_PIN / FYERS_TOTP_KEY")
     return ("⚠️ *Broker logins need attention before the market opens*\n" + "\n".join(lines)) if lines else None

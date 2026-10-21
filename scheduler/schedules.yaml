@@ -64,6 +64,15 @@ jobs:
 
   # --- BROKER LOGINS (before the 09:15 open) ---
   # Fyers logs in by itself (PIN + TOTP). Flattrade and Paytm Money need a person: the check tells Slack which.
+  - id: broker_auto_login
+    name: Broker logins (unattended Flattrade login)
+    type: http
+    service: trading
+    schedule: "45 7 * * 1-5"
+    url: /terminal/brokers/login-all
+    method: POST
+    slack: failures   # the endpoint itself tells Slack which broker failed and how to log in by hand
+
   - id: fyers_token_refresh
     name: Fyers token refresh
     type: http

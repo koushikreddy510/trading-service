@@ -16,6 +16,7 @@ REST (JSON)                                                   websocket  /termin
   POST   /notify/data-digest   (Slack digest of data freshness and symbol-list changes)
   GET    /account/funds  GET /account/products  GET /quote?symbol=    (live broker, read-only)
   POST   /order-preview  {symbol, side, quantity, product?, price_type?, price?}  margin + value; never places an order
+  GET    /brokers   POST /brokers/{broker}/login {code?}   POST /brokers/login-all   (daily broker logins)
   POST   /instruments/refresh  (reloads the MCX futures list from Flattrade's scrip master; a daily job calls this)
   POST   /notify/broker-tokens (checks each broker's token; Slack says which logins are needed; a scheduled job calls this)
   GET    /data/status          (how complete and fresh the data is, symbol changes, the scrape jobs)
@@ -84,6 +85,38 @@ def indicator_specs():
 @router.get("/symbols/search")
 def search_symbols(request: Request, q: str = Query("", max_length=40), limit: int = Query(20, ge=1, le=50)):
     return {"results": symbol_search.search(terminal_of(request).db, q, limit)}
+
+
+# ------------------------------------------------------------------ broker logins
+@router.get("/brokers")
+async def brokers(request: Request):
+    """Each broker: is today's token accepted, where it came from, is unattended login set up, its login page."""
+    return {"brokers": await asyncio.to_thread(terminal_of(request).logins.status)}
+
+
+@router.post("/brokers/{broker}/login")
+async def broker_login(request: Request, broker: str, body: dict = Body(default={})):
+    """Log in now: unattended (no body), or with the URL the broker's login page redirected to ({"code": url})."""
+    from broker_auth.providers import AuthError
+
+    try:
+        return await terminal_of(request).logins.login(broker, (body or {}).get("code") or None)
+    except ValueError as e:
+        raise bad_request(e) from None
+    except AuthError as e:
+        raise HTTPException(502, str(e)) from None
+
+
+@router.post("/brokers/login-all")
+async def broker_login_all(request: Request):
+    """The morning job: unattended login for every broker that has it set up; Slack hears about failures."""
+    t = terminal_of(request)
+    results = await t.logins.login_all()
+    failed = {b: r["detail"] for b, r in results.items() if r["ok"] is False}
+    if failed:
+        t.notifier.send("🔑 *Broker login failed*\n" + "\n".join(f"  {b}: {d}" for b, d in failed.items())
+                        + "\n  Log in from the Workspace: Data → Broker logins.", channel="jobs")
+    return {"results": results}
 
 
 # ------------------------------------------------------------- account (read-only)
@@ -652,7 +685,7 @@ def notify_broker_tokens(request: Request):
     t = terminal_of(request)
     from broker_auth.check import alert_text, check_all
 
-    results = check_all()
+    results = check_all(t.logins.store.env())        # stored logins count, not only the environment
     text = alert_text(results)
     if text:
         t.notifier.send(text, channel="jobs")

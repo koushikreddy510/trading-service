@@ -34,6 +34,7 @@ from .instruments import Instruments
 from .market import CandleService
 from .paper import PaperBook
 from .rules import RuleRepo, SignalRepo
+from .sessions import BrokerLogins, SessionStore
 from .notify import Notifier
 from .ticks import QuoteBoard, Tick
 from .timeframes import IST, UTC, session_open
@@ -78,6 +79,8 @@ class Terminal:
         self.watchlists = WatchlistRepo(db)
         self.feed_status = "disconnected"
         self.broker = None            # account.BrokerAccount in live mode: funds, quotes, margin previews (read-only)
+        self.token_listeners: dict[str, list[Callable[[dict], Awaitable[None] | None]]] = {}   # broker -> who needs a new token
+        self.logins = BrokerLogins(db, apply=self.apply_tokens)
         self._tasks: list[asyncio.Task] = []
         self._backfilled: dict[str, datetime] = {}
         self._lost_at: Optional[datetime] = None      # when the live feed was last seen going down (None = it is up, or never was)
@@ -92,6 +95,13 @@ class Terminal:
             asyncio.create_task(self._run_feed(), name="terminal-feed"),
             asyncio.create_task(self._flush_loop(), name="terminal-flush"),
         ]
+
+    async def apply_tokens(self, broker: str, tokens: dict) -> None:
+        """A new login: hand the token to the feed / broker clients that use it, without a restart."""
+        for listener in self.token_listeners.get(broker, []):
+            res = listener(tokens)
+            if asyncio.iscoroutine(res):
+                await res
 
     def _seed_indices(self) -> None:
         """Index list in place on every start; the "Indices" watchlist only the first time (a deleted one stays deleted)."""
@@ -277,7 +287,7 @@ def build_terminal(db: Database, mode: Optional[str] = None) -> Terminal:
     if mode == "flattrade":
         from .feed.flattrade import FlattradeApi, FlattradeFeed, FlattradeHistory, TokenResolver, config_from_env
 
-        cfg = config_from_env()
+        cfg = config_from_env(SessionStore(db).env(), require_token=False)   # a stored login beats the environment
         api = FlattradeApi(cfg["user_id"], cfg["token"])
         resolver = TokenResolver(api, db)
         feed = FlattradeFeed(cfg["user_id"], cfg["account_id"], cfg["token"], resolver)
@@ -286,5 +296,11 @@ def build_terminal(db: Database, mode: Optional[str] = None) -> Terminal:
         instruments = Instruments(db)
         terminal = Terminal(db, feed, FlattradeHistory(api, resolver, instruments), mode="flattrade")
         terminal.broker = BrokerAccount(api, resolver, instruments, cfg["account_id"])
+
+        async def use_flattrade_token(tokens: dict) -> None:
+            api.token = tokens["FLATTRADE_TOKEN"]
+            await feed.use_token(tokens["FLATTRADE_TOKEN"])
+
+        terminal.token_listeners.setdefault("flattrade", []).append(use_flattrade_token)
         return terminal
     raise ValueError(f"TERMINAL_MODE must be 'demo' or 'flattrade', got {mode!r}")

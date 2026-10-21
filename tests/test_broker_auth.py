@@ -116,7 +116,7 @@ def test_slack_text_names_the_command_only_when_a_person_is_needed():
     assert check.alert_text(ok) is None
     bad = {**ok, "flattrade": {"status": "rejected", "detail": "expired"}, "fyers": {"status": "rejected", "detail": "x"}}
     text = check.alert_text(bad)
-    assert "python -m broker_auth flattrade" in text and "refreshes it automatically" in text and "paytm" not in text
+    assert "Broker logins" in text and "refreshes it automatically" in text and "paytm" not in text
 
 
 def test_the_token_check_sends_flattrade_raw_json_not_url_encoded():

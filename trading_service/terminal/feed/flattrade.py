@@ -42,13 +42,15 @@ class NotConfigured(BrokerError):
     pass
 
 
-def config_from_env() -> dict[str, str]:
-    """FLATTRADE_USER_ID / FLATTRADE_TOKEN (the daily session token, 'jKey') / FLATTRADE_ACCOUNT_ID."""
-    user = os.getenv("FLATTRADE_USER_ID", "")
-    token = os.getenv("FLATTRADE_TOKEN", "")
-    if not user or not token:
+def config_from_env(env: Optional[dict] = None, require_token: bool = True) -> dict[str, str]:
+    """FLATTRADE_USER_ID / FLATTRADE_TOKEN (the daily session token, 'jKey') / FLATTRADE_ACCOUNT_ID.
+    The live terminal starts without a token (require_token=False) so a login from the app can supply one."""
+    env = os.environ if env is None else env
+    user = env.get("FLATTRADE_USER_ID", "")
+    token = env.get("FLATTRADE_TOKEN", "")
+    if not user or (require_token and not token):
         raise NotConfigured("set FLATTRADE_USER_ID and FLATTRADE_TOKEN (today's session token)")
-    return {"user_id": user, "token": token, "account_id": os.getenv("FLATTRADE_ACCOUNT_ID", user)}
+    return {"user_id": user, "token": token, "account_id": env.get("FLATTRADE_ACCOUNT_ID") or user}
 
 
 # ------------------------------------------------------------------------ REST
@@ -252,6 +254,15 @@ class FlattradeFeed:
         self._merged: dict[str, dict[str, str]] = {}
         self._ws = None
         self._authenticated = False
+        self._wake: Optional[asyncio.Event] = None
+
+    async def use_token(self, token: str) -> None:
+        """A new day's session token: drop the current connection and log in again with it right away."""
+        self.token = token
+        if self._wake is not None:
+            self._wake.set()                       # skip any back-off wait
+        if self._ws is not None:
+            await self._ws.close()
 
     # ---------------------------------------------------------- subscriptions
     async def subscribe(self, symbols: Sequence[str]) -> None:
@@ -308,8 +319,12 @@ class FlattradeFeed:
                 log.warning("flattrade feed: %s", e)
             self._ws, self._authenticated = None, False
             self._set_status("disconnected")
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, self.max_backoff)
+            self._wake = asyncio.Event()
+            try:
+                await asyncio.wait_for(self._wake.wait(), backoff)
+                backoff = 1.0                      # woken by a new token: try it now
+            except asyncio.TimeoutError:
+                backoff = min(backoff * 2, self.max_backoff)
 
     async def _run_once(self, on_tick: TickHandler) -> None:
         from websockets.asyncio.client import connect

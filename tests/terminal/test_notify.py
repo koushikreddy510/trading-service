@@ -233,4 +233,4 @@ class TestBrokerTokenCheck:
             assert c.post("/terminal/notify/broker-tokens").json()["flattrade"]["status"] == "rejected"
             monkeypatch.setattr(check, "_http", lambda m, u, **kw: (200, {"stat": "Ok"}))
             assert c.post("/terminal/notify/broker-tokens").json()["flattrade"]["status"] == "valid"
-        assert len(slack.texts) == 1 and "python -m broker_auth flattrade" in slack.texts[0] and "Session Expired" in slack.texts[0]
+        assert len(slack.texts) == 1 and "Broker logins" in slack.texts[0] and "Session Expired" in slack.texts[0]

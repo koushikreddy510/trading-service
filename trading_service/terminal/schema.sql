@@ -298,3 +298,11 @@ CREATE TABLE IF NOT EXISTS terminal_ohlcv_1d (
 
 -- Rupees per 1.00 price move per unit of quantity: 1 for stocks, lot size x price factor for a futures lot.
 ALTER TABLE terminal_paper_positions ADD COLUMN IF NOT EXISTS multiplier DOUBLE PRECISION NOT NULL DEFAULT 1;
+
+-- The day's broker tokens (see sessions.py): newest login wins over the environment; survives restarts.
+CREATE TABLE IF NOT EXISTS terminal_broker_sessions (
+    broker      TEXT PRIMARY KEY,
+    tokens      JSONB NOT NULL,
+    source      TEXT NOT NULL,
+    obtained_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
