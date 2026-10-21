@@ -458,3 +458,45 @@ def compute_trail(spec: Mapping[str, Any], side: str, ctx: EvalContext) -> Optio
         raw = line_series(drawing, ctx.times, ctx.tf, spec.get("edge"))[-1]
         value = np.nan if raw is None else raw
     return float(value) if math.isfinite(value) else None
+
+
+# ------------------------------------------------------------------ explaining
+def explain(cond: Mapping[str, Any], ctx: EvalContext, live: Optional[float] = None) -> dict:
+    """How a *validated* condition stands at the latest completed bar, and how far each part is from triggering.
+
+    Leaves: {label, met, a, b, a_live, distance, distance_pct, side}. `distance` is how far `a` must still move (in its
+    own units, signed so that > 0 means "not there yet") for the condition to hold, and `distance_pct` is that move as a
+    percentage of where `a` is now; for a cross it is measured to the other side of `b`. `a_live` uses the live price when `a` is a price, so the screen can show the move in progress.
+    Groups: {"all"|"any", met, children, distance_pct} where all = the farthest unmet child, any = the nearest."""
+    kind = cond["type"]
+    if kind in ("all", "any"):
+        kids = [explain(c, ctx, live) for c in cond["conditions"]]
+        met = all(k["met"] for k in kids) if kind == "all" else any(k["met"] for k in kids)
+        pending = [k["distance_pct"] for k in kids if not k["met"] and k.get("distance_pct") is not None]
+        dist = 0.0 if met else ((max(pending) if kind == "all" else min(pending)) if pending else None)
+        return {"type": kind, "met": met, "children": kids, "distance_pct": dist}
+    if kind == "time_between":
+        r = evaluate(cond, ctx)
+        return {"type": kind, "label": f"time {cond['start']}-{cond['end']} IST", "met": r.fired, "distance_pct": 0.0 if r.fired else None}
+    if len(ctx.candles) < 2:
+        return {"type": kind, "label": "not enough candles yet", "met": False, "distance_pct": None}
+    try:
+        a, b = ctx.series(cond["a"]), ctx.series(cond["b"])
+    except ConditionError as e:
+        return {"type": kind, "label": str(e), "met": False, "distance_pct": None}
+    a1, b1 = float(a[-1]), float(b[-1])
+    la, lb = _label(cond["a"]), _label(cond["b"])
+    if not (math.isfinite(a1) and math.isfinite(b1)):
+        return {"type": kind, "label": f"{la} vs {lb}: not enough history", "met": False, "distance_pct": None}
+    up = (cond.get("direction") == "above") if kind == "cross" else cond["op"] in (">", ">=")
+    met = evaluate(cond, ctx).fired
+    a_live = live if (live is not None and cond["a"]["kind"] == "close") else None
+    now = a_live if a_live is not None else a1
+    gap = (b1 - now) if up else (now - b1)             # > 0: still to go; <= 0: already on the triggering side
+    word = (f"crosses {cond['direction']}" if kind == "cross" else cond["op"])
+    return {
+        "type": kind, "label": f"{la} {word} {lb}", "met": met, "a": round(a1, 4), "b": round(b1, 4),
+        "a_live": round(a_live, 4) if a_live is not None else None, "side": "above" if up else "below",
+        "distance": round(gap, 4), "distance_pct": 0.0 if met else round(max(gap, 0.0) / abs(now) * 100, 3) if now else None,
+        "on_trigger_side": gap <= 0,
+    }

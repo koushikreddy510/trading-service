@@ -222,3 +222,9 @@ def test_an_entry_without_funds_in_its_segment_is_refused_but_an_exit_never_is(s
     svc.place("flattrade", "NSE:SBIN-EQ", "SELL", 1, "I", "SL", trigger_price=945.0)     # a stop still goes
     svc.place("flattrade", "NSE:SBIN-EQ", "SELL", 1, "I", "LMT", 960.0)                  # and so does an exit
     assert len(broker.sent) == 3
+
+
+def test_the_order_type_asked_for_is_recorded(setup):
+    svc, broker, _ = setup
+    assert svc.place("flattrade", "NSE:SBIN-EQ", "BUY", 1, "I", "MKT")["order_type"] == "MKT"
+    assert svc.place("flattrade", "NSE:SBIN-EQ", "BUY", 1, "I", "LMT", 950)["order_type"] == "LMT"

@@ -82,11 +82,13 @@ class OrderRepo:
     def insert(self, o: dict) -> None:
         self.db.execute(
             """
-            INSERT INTO terminal_orders (id, account, symbol, side, quantity, units, product, price, trigger_price, status, source, link, purpose)
-            VALUES (:id, :account, :symbol, :side, :quantity, :units, :product, :price, :trigger_price, 'submitting', :source, :link, :purpose)
+            INSERT INTO terminal_orders (id, account, symbol, side, quantity, units, product, price, trigger_price, status, source, link, purpose,
+                                         order_type)
+            VALUES (:id, :account, :symbol, :side, :quantity, :units, :product, :price, :trigger_price, 'submitting', :source, :link, :purpose,
+                    :price_type)
             """,
             **{k: o.get(k) for k in ("id", "account", "symbol", "side", "quantity", "units", "product", "price", "trigger_price", "source",
-                                     "link", "purpose")},
+                                     "link", "purpose", "price_type")},
         )
 
     def update(self, order_id: str, **fields: Any) -> None:

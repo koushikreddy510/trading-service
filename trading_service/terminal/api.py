@@ -8,7 +8,7 @@ REST (JSON)                                                   websocket  /termin
   GET/POST /watchlists   PATCH/DELETE /watchlists/{id}                       "signal"|"position"|"status"|"error"}
          POST /watchlists/{id}/symbols  DELETE .../symbols/{symbol}  PUT .../order
   GET/POST /drawings     PUT/DELETE /drawings/{id}
-  GET/POST /rules        PUT/DELETE /rules/{id}   PATCH /rules/{id}/enabled
+  GET/POST /rules        PUT/DELETE /rules/{id}   PATCH /rules/{id}/enabled   GET /rules/watch (how close each rule is)
   GET    /signals
   GET    /positions      POST /positions/{id}/close
   GET    /financials?symbol=      GET /results/recent
@@ -810,3 +810,67 @@ def sync_unlink(request: Request, watchlist_id: str):
     t = terminal_of(request)
     if not sync.unlink(t.db, watchlist_id, t.watchlists.user):
         raise HTTPException(404, "that watchlist is not synced from a screener strategy")
+
+
+# ------------------------------------------------------------------ rule watch
+def _rule_watch(t: Terminal) -> list[dict]:
+    from .candles import completed
+    from .conditions import EvalContext, explain
+    from .drawings import DrawingRepo
+    from .engine import LOOKBACK_BARS
+    from .timeframes import bucket_end, bucket_start, in_session
+
+    now = t.clock()
+    drawings_by_symbol: dict[str, dict] = {}
+    open_by_rule: dict[str, list] = {}
+    for p in t.book.open_positions():
+        rid = t.db.scalar("SELECT rule_id FROM terminal_signals WHERE id = :s", s=p.signal_id) if p.signal_id else None
+        if rid:
+            open_by_rule.setdefault(rid, []).append(p)
+    out = []
+    for rule in t.rules.list(enabled_only=True) + [r for r in t.rules.list() if not r.enabled and r.id in open_by_rule]:
+        ex = exchange_of(rule.symbol)
+        if rule.symbol not in drawings_by_symbol:
+            drawings_by_symbol[rule.symbol] = {d.id: d for d in DrawingRepo(t.db).list(rule.symbol)}
+        q = t.quotes.get(rule.symbol)
+        live = q.price if q else None
+
+        def ctx_for(tf: str):
+            bars = completed(t.candles.candles(rule.symbol, tf, LOOKBACK_BARS), tf, now, rule.symbol)
+            return EvalContext(bars, tf, drawings_by_symbol[rule.symbol], ex), bars
+
+        try:
+            ctx, bars = ctx_for(rule.timeframe)
+            entry = explain(rule.condition, ctx, live)
+        except Exception as e:  # noqa: BLE001 - one broken rule must not hide the others
+            entry, bars = {"type": "error", "label": str(e), "met": False, "distance_pct": None}, []
+        session = in_session(now, ex)
+        row = {
+            "rule": rule.to_json(), "live": live, "session_open": session,
+            "last_candle": int(bars[-1].time.timestamp()) if bars else None,
+            "next_check": int(bucket_end(bucket_start(now, rule.timeframe, ex), rule.timeframe, ex).timestamp()) if session else None,
+            "entry": entry, "positions": [],
+        }
+        for p in open_by_rule.get(rule.id, []):
+            exits = []
+            for level, cond, tf in ((1, rule.exit_condition, rule.exit_timeframe), (2, rule.exit_condition_2, rule.exit_timeframe_2 or rule.exit_timeframe)):
+                if cond and not (level == 1 and p.exit_level == 2):        # level 1 until it has fired
+                    try:
+                        exits.append({"level": level, "timeframe": tf or rule.timeframe, **explain(cond, ctx_for(tf or rule.timeframe)[0], live)})
+                    except Exception as e:  # noqa: BLE001
+                        exits.append({"level": level, "type": "error", "label": str(e), "met": False})
+            link = t.mirror.links.get(p.id)
+            row["positions"].append({**p.to_json(live), "exits": exits,
+                                     "live_link": {k: link[k] for k in ("state", "note", "last_stop")} if link else None})
+        out.append(row)
+    def closeness(r: dict) -> tuple:
+        d = r["entry"].get("distance_pct")
+        return (not r["positions"], d is None, d if d is not None else 0)
+    return sorted(out, key=closeness)
+
+
+@router.get("/rules/watch")
+async def rules_watch(request: Request):
+    """Every enabled rule (and any rule with an open position): its conditions evaluated now, how far each part is
+    from triggering, when it is checked next, and its open position with the exits that would close it."""
+    return {"rules": await asyncio.to_thread(_rule_watch, terminal_of(request))}

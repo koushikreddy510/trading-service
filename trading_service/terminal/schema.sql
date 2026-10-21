@@ -360,3 +360,5 @@ CREATE TABLE IF NOT EXISTS terminal_live_links (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE terminal_orders ADD COLUMN IF NOT EXISTS order_type TEXT;         -- as asked: LMT | MKT (sent as a marketable limit) | SL
+UPDATE terminal_orders SET order_type = CASE WHEN trigger_price IS NOT NULL THEN 'SL' ELSE 'LMT' END WHERE order_type IS NULL;
