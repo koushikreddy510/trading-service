@@ -14,6 +14,8 @@ REST (JSON)                                                   websocket  /termin
   GET    /financials?symbol=      GET /results/recent
   GET    /sectors                 GET /sectors/compare?group=|sector=
   POST   /notify/data-digest   (Slack digest of data freshness and symbol-list changes)
+  GET    /account/funds  GET /account/products  GET /quote?symbol=    (live broker, read-only)
+  POST   /order-preview  {symbol, side, quantity, product?, price_type?, price?}  margin + value; never places an order
   POST   /instruments/refresh  (reloads the MCX futures list from Flattrade's scrip master; a daily job calls this)
   POST   /notify/broker-tokens (checks each broker's token; Slack says which logins are needed; a scheduled job calls this)
   GET    /data/status          (how complete and fresh the data is, symbol changes, the scrape jobs)
@@ -82,6 +84,54 @@ def indicator_specs():
 @router.get("/symbols/search")
 def search_symbols(request: Request, q: str = Query("", max_length=40), limit: int = Query(20, ge=1, le=50)):
     return {"results": symbol_search.search(terminal_of(request).db, q, limit)}
+
+
+# ------------------------------------------------------------- account (read-only)
+def broker_of(request: Request):
+    b = terminal_of(request).broker
+    if b is None:
+        raise HTTPException(503, "account data needs the live broker (TERMINAL_MODE=flattrade)")
+    return b
+
+
+def broker_call(fn, *args, **kwargs):
+    from .feed.base import BrokerError
+
+    try:
+        return fn(*args, **kwargs)
+    except ValueError as e:
+        raise bad_request(e) from None
+    except BrokerError as e:
+        raise HTTPException(502, str(e)) from None
+
+
+@router.get("/account/funds")
+def account_funds(request: Request):
+    return broker_call(broker_of(request).funds)
+
+
+@router.get("/account/products")
+def account_products(request: Request):
+    return broker_call(broker_of(request).products)
+
+
+@router.get("/quote")
+def quote(request: Request, symbol: str):
+    return broker_call(broker_of(request).quote, symbol_param(symbol))
+
+
+@router.post("/order-preview")
+def order_preview(request: Request, body: dict = Body(...)):
+    """What an order would cost (contract value, margin, funds left). Calculates only; never sends an order."""
+    try:
+        quantity = int(body.get("quantity") or 0)
+        price = float(body["price"]) if body.get("price") not in (None, "") else None
+    except (TypeError, ValueError):
+        raise HTTPException(400, "quantity and price must be numbers") from None
+    return broker_call(
+        broker_of(request).preview, symbol_param(body.get("symbol")), str(body.get("side") or ""), quantity,
+        body.get("product") or None, str(body.get("price_type") or "LMT"), price,
+    )
 
 
 @router.post("/instruments/refresh")

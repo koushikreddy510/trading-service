@@ -76,6 +76,7 @@ class Terminal:
         self.rules, self.drawings, self.signals = RuleRepo(db), DrawingRepo(db), SignalRepo(db)
         self.watchlists = WatchlistRepo(db)
         self.feed_status = "disconnected"
+        self.broker = None            # account.BrokerAccount in live mode: funds, quotes, margin previews (read-only)
         self._tasks: list[asyncio.Task] = []
         self._backfilled: dict[str, datetime] = {}
         self._lost_at: Optional[datetime] = None      # when the live feed was last seen going down (None = it is up, or never was)
@@ -271,5 +272,10 @@ def build_terminal(db: Database, mode: Optional[str] = None) -> Terminal:
         api = FlattradeApi(cfg["user_id"], cfg["token"])
         resolver = TokenResolver(api, db)
         feed = FlattradeFeed(cfg["user_id"], cfg["account_id"], cfg["token"], resolver)
-        return Terminal(db, feed, FlattradeHistory(api, resolver, Instruments(db)), mode="flattrade")
+        from .account import BrokerAccount
+
+        instruments = Instruments(db)
+        terminal = Terminal(db, feed, FlattradeHistory(api, resolver, instruments), mode="flattrade")
+        terminal.broker = BrokerAccount(api, resolver, instruments, cfg["account_id"])
+        return terminal
     raise ValueError(f"TERMINAL_MODE must be 'demo' or 'flattrade', got {mode!r}")
