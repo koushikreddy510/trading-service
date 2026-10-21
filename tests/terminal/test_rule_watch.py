@@ -71,3 +71,8 @@ def test_the_watch_endpoint_lists_rules_closest_first(db):
     assert [r["rule"]["name"] for r in rows][:2] == ["near", "far"]
     assert rows[1]["entry"]["distance_pct"] == pytest.approx((1_000_000 - 100) / 100 * 100)
     assert rows[0]["entry"]["label"] == "close > 1" and "next_check" in rows[0]
+
+
+def test_a_cross_that_happened_earlier_is_not_reported_as_close():
+    e = explain({"type": "cross", "direction": "below", "a": CLOSE, "b": LINE}, ctx([14540, 14530, 14520], line=14536))
+    assert e["state"] == "crossed_earlier" and e["distance_pct"] is None and e["met"] is False

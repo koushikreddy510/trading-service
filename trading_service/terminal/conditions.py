@@ -491,9 +491,16 @@ def explain(cond: Mapping[str, Any], ctx: EvalContext, live: Optional[float] = N
     up = (cond.get("direction") == "above") if kind == "cross" else cond["op"] in (">", ">=")
     met = evaluate(cond, ctx).fired
     a_live = live if (live is not None and cond["a"]["kind"] == "close") else None
+    word = (f"crosses {cond['direction']}" if kind == "cross" else cond["op"])
+    last_gap = (b1 - a1) if up else (a1 - b1)
+    if kind == "cross" and not met and last_gap <= 0:
+        # already on the far side at the last close without crossing on it: the cross happened earlier; only going back
+        # and crossing again would fire, so it is not "0% away"
+        return {"type": kind, "label": f"{la} {word} {lb}", "met": False, "a": round(a1, 4), "b": round(b1, 4),
+                "a_live": round(a_live, 4) if a_live is not None else None, "side": "above" if up else "below",
+                "state": "crossed_earlier", "distance": None, "distance_pct": None, "on_trigger_side": False}
     now = a_live if a_live is not None else a1
     gap = (b1 - now) if up else (now - b1)             # > 0: still to go; <= 0: already on the triggering side
-    word = (f"crosses {cond['direction']}" if kind == "cross" else cond["op"])
     return {
         "type": kind, "label": f"{la} {word} {lb}", "met": met, "a": round(a1, 4), "b": round(b1, 4),
         "a_live": round(a_live, 4) if a_live is not None else None, "side": "above" if up else "below",
