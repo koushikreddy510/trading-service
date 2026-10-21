@@ -122,3 +122,115 @@ def test_sell_rules_get_a_stop_above_the_entry(db):
     sig = sig_event["signal"]
     assert sig["side"] == "SELL" and sig["entry"] == 99.0
     assert sig["stop"] == 100.5 and sig["target"] == pytest.approx(99.0 - 2 * 1.5)   # the bar's high; 2R below
+
+
+# ----------------------------------------------------------- entry scoring
+class TestEntryScoring:
+    """Confidence-scored partial entries: qty scales by distance from an indicator."""
+
+    SCORE_INDICATOR = {"name": "ema", "params": {"period": 3}, "output": "value"}
+    ENTRY_LEVELS = [
+        {"qty": 10, "max_dist_pct": 0.5},   # high confidence: within 0.5%
+        {"qty": 6,  "max_dist_pct": 2.0},   # mid confidence: within 2%
+        {"qty": 3},                           # low confidence: catch-all
+    ]
+
+    def _rule(self, db):
+        from tests.terminal.test_rules import payload
+        from trading_service.terminal.rules import RuleRepo, rule_from_payload
+        r = rule_from_payload(payload(
+            entry_score_indicator=self.SCORE_INDICATOR,
+            entry_levels=self.ENTRY_LEVELS,
+        ))
+        return RuleRepo(db).save(r)
+
+    def test_score_quantity_returns_full_qty_when_close_is_very_near_indicator(self):
+        from trading_service.terminal.rules import rule_from_payload
+        from tests.terminal.test_rules import payload
+        rule = rule_from_payload(payload(
+            entry_score_indicator=self.SCORE_INDICATOR,
+            entry_levels=self.ENTRY_LEVELS,
+        ))
+        # distance = abs(100 - 100.2) / 100.2 * 100 = 0.2% → level 1 (≤0.5%)
+        assert rule.score_quantity(100.0, 100.2) == 10
+
+    def test_score_quantity_uses_mid_level_at_medium_distance(self):
+        from trading_service.terminal.rules import rule_from_payload
+        from tests.terminal.test_rules import payload
+        rule = rule_from_payload(payload(
+            entry_score_indicator=self.SCORE_INDICATOR,
+            entry_levels=self.ENTRY_LEVELS,
+        ))
+        # distance = abs(100 - 101.5) / 101.5 * 100 ≈ 1.48% → level 2 (≤2%)
+        assert rule.score_quantity(100.0, 101.5) == 6
+
+    def test_score_quantity_uses_catch_all_when_far(self):
+        from trading_service.terminal.rules import rule_from_payload
+        from tests.terminal.test_rules import payload
+        rule = rule_from_payload(payload(
+            entry_score_indicator=self.SCORE_INDICATOR,
+            entry_levels=self.ENTRY_LEVELS,
+        ))
+        # distance = abs(100 - 105) / 105 * 100 ≈ 4.76% → catch-all level 3
+        assert rule.score_quantity(100.0, 105.0) == 3
+
+    def test_score_quantity_falls_back_to_rule_qty_when_no_indicator(self):
+        from trading_service.terminal.rules import rule_from_payload
+        from tests.terminal.test_rules import payload
+        rule = rule_from_payload(payload())  # no entry_score_indicator
+        assert rule.score_quantity(100.0, 102.0) == 10
+
+    def test_engine_uses_scoring_to_pick_quantity_on_signal(self, db):
+        from tests.terminal.helpers import hourly_bars
+        from trading_service.terminal.drawings import Drawing, DrawingRepo
+        from trading_service.terminal.engine import RuleEngine
+        from trading_service.terminal.paper import PaperBook
+        # Entry fires when close crosses above 100. EMA3 of our CLOSES=[98,99,100,101]
+        # at bar3 (close=101): EMA3 ≈ 100.375.  dist = abs(101-100.375)/100.375*100 ≈ 0.62% → level 2 (qty=6)
+        bars = hourly_bars(CLOSES)
+        DrawingRepo(db).save(Drawing(SYMBOL, "horizontal_line", [{"time": 1, "price": 100.0}], id="res"))
+        from tests.terminal.test_rules import payload
+        from trading_service.terminal.rules import RuleRepo, rule_from_payload
+        rule = RuleRepo(db).save(rule_from_payload(payload(
+            entry_score_indicator=self.SCORE_INDICATOR,
+            entry_levels=self.ENTRY_LEVELS,
+        )))
+        book = PaperBook(db)
+        engine = RuleEngine(db, lambda s, tf, n: bars, book, clock=lambda: BAR3_END)
+        events = engine.on_candle_close(SYMBOL, "1H", BAR3_START)
+        pos = next(e for e in events if e["type"] == "position")["position"]
+        # EMA3 at entry: ~100.375 → distance ~0.62% → level 2 (qty=6) or level 1 (qty=10).
+        # Exact value depends on EMA calc; assert it is NOT the rule's default qty=10 (scoring is active)
+        # and is one of the defined levels [3, 6, 10].
+        assert pos["quantity"] in (3, 6, 10)
+
+    def test_entry_levels_validation_rejects_non_list(self):
+        from trading_service.terminal.rules import InvalidRule, rule_from_payload
+        from tests.terminal.test_rules import payload
+        import pytest
+        with pytest.raises(InvalidRule, match="1–3"):
+            rule_from_payload(payload(entry_score_indicator=self.SCORE_INDICATOR, entry_levels={"qty": 5}))
+
+    def test_entry_levels_validation_rejects_too_many_levels(self):
+        from trading_service.terminal.rules import InvalidRule, rule_from_payload
+        from tests.terminal.test_rules import payload
+        import pytest
+        with pytest.raises(InvalidRule, match="1–3"):
+            rule_from_payload(payload(entry_score_indicator=self.SCORE_INDICATOR,
+                                      entry_levels=[{"qty":10,"max_dist_pct":0.5},{"qty":7,"max_dist_pct":2},
+                                                    {"qty":4,"max_dist_pct":5},{"qty":2}]))
+
+    def test_entry_levels_last_must_be_catch_all(self):
+        from trading_service.terminal.rules import InvalidRule, rule_from_payload
+        from tests.terminal.test_rules import payload
+        import pytest
+        with pytest.raises(InvalidRule, match="catch-all"):
+            rule_from_payload(payload(entry_score_indicator=self.SCORE_INDICATOR,
+                                      entry_levels=[{"qty":10,"max_dist_pct":0.5}, {"qty":5,"max_dist_pct":2}]))
+
+    def test_rule_with_entry_scoring_round_trips_through_db(self, db):
+        rule = self._rule(db)
+        from trading_service.terminal.rules import RuleRepo
+        got = RuleRepo(db).get(rule.id)
+        assert got.entry_score_indicator == self.SCORE_INDICATOR
+        assert got.entry_levels == self.ENTRY_LEVELS

@@ -69,6 +69,10 @@ ALTER TABLE terminal_rules ADD COLUMN IF NOT EXISTS exit_condition   JSONB;
 ALTER TABLE terminal_rules ADD COLUMN IF NOT EXISTS exit_timeframe   TEXT;
 ALTER TABLE terminal_rules ADD COLUMN IF NOT EXISTS exit_condition_2 JSONB;
 ALTER TABLE terminal_rules ADD COLUMN IF NOT EXISTS exit_timeframe_2 TEXT;
+-- Entry scoring: optional indicator + up to 3 quantity levels based on distance from indicator at signal time.
+-- entry_levels is [{qty, max_dist_pct?}, ...] sorted tightest-first; the last item is the catch-all.
+ALTER TABLE terminal_rules ADD COLUMN IF NOT EXISTS entry_score_indicator JSONB;
+ALTER TABLE terminal_rules ADD COLUMN IF NOT EXISTS entry_levels          JSONB;
 
 -- A signal is the record of a rule firing on one closed bar. UNIQUE (rule_id,
 -- bar_time) is what guarantees a rule can never fire twice for the same candle,

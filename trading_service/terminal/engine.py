@@ -53,6 +53,29 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _score_quantity(rule: Rule, close: float, ctx: EvalContext) -> int:
+    """Compute entry qty from the rule's entry_score_indicator distance at the signal bar."""
+    import numpy as np
+    from . import indicators as ind
+
+    spec = rule.entry_score_indicator
+    if not spec or not rule.entry_levels:
+        return rule.quantity
+    try:
+        highs = np.array([b.high for b in ctx.candles])
+        lows = np.array([b.low for b in ctx.candles])
+        closes = np.array([b.close for b in ctx.candles])
+        vals = ind.compute(spec["name"], spec.get("params", {}), highs, lows, closes)
+        raw = vals.get(spec.get("output", "value"), [None])[-1]
+        if raw is None or np.isnan(raw):
+            return rule.quantity
+        indicator_val = float(raw)
+    except Exception as e:
+        log.warning("entry score indicator computation failed for rule %s: %s", rule.id, e)
+        return rule.quantity
+    return rule.score_quantity(close, indicator_val)
+
+
 class RuleEngine:
     def __init__(
         self,
@@ -114,6 +137,8 @@ class RuleEngine:
             signal.status, signal.reason = "rejected", "already in a position from this rule"
 
         quantity = rule.quantity
+        if signal.status == "open" and rule.entry_score_indicator:
+            quantity = _score_quantity(rule, entry, ctx)
         if signal.status == "open" and self.sizer:
             quantity, why = self.sizer(rule, signal)
             if quantity < 1:
