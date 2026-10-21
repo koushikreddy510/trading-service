@@ -98,7 +98,9 @@ class TestTrailValidation:
     def test_a_rule_without_an_exit_plan_has_none(self):
         rule = rule_from_payload(payload())
         assert (rule.trail, rule.exit_condition, rule.exit_timeframe) == (None, None, None)
-        assert rule.exit_plan() == {"trail": None, "exit_condition": None, "exit_timeframe": "1H"}
+        plan = rule.exit_plan()
+        assert plan["trail"] is None and plan["exit_condition"] is None and plan["exit_timeframe"] == "1H"
+        assert plan["exit_condition_2"] is None and plan["exit_timeframe_2"] is None
 
     def test_the_trail_follows_the_rule_timeframe_unless_it_names_its_own(self):
         assert rule_from_payload(payload(trail=CANDLE_TRAIL)).exit_plan()["trail"]["timeframe"] == "1H"
@@ -354,3 +356,164 @@ class TestExitCondition:
         h.entered()
         [closed] = h.book.on_tick(SYMBOL, 99.0)
         assert closed.exit_reason == "stop"
+
+
+# ------------------------------------------------------------ two-level exits
+# threshold for level 1 exit: close crosses below 105
+BELOW_105 = {"type": "cross", "direction": "below", "a": {"kind": "close"}, "b": {"kind": "value", "value": 105}}
+# threshold for level 2 exit: close crosses below 103
+BELOW_103 = {"type": "cross", "direction": "below", "a": {"kind": "close"}, "b": {"kind": "value", "value": 103}}
+
+
+class TestTwoLevelExits:
+    """2-level exits: exit_condition closes 50%, exit_condition_2 closes the rest.
+
+    Scenario: entry at 101; rule has exit_condition=BELOW_105 (cross below 105)
+    and exit_condition_2=BELOW_103 (cross below 103).
+    We pump the price to 106 so both cross-below conditions can later fire.
+    """
+
+    def _run(self, db, **over):
+        """Open a position with two exits; pump bar to 106 to prime for crosses."""
+        h = Run(db, {"exit_condition": BELOW_105, "exit_condition_2": BELOW_103, **over})
+        h.entered()
+        # Pump to 106 so close > 105 > 103, enabling cross-below events later
+        assert h.next_bar(106.0) == []
+        return h
+
+    # ---- level 1: partial close -------------------------------------------------
+
+    def test_level_1_fires_partial_close_not_full_close(self, db):
+        h = self._run(db)
+        # Close at 104: crosses below 105 (level-1 threshold) but NOT below 103
+        [event] = h.next_bar(104.0)
+        p = event["position"]
+        assert p["status"] == "open", "position stays open after level-1 exit"
+        assert p["exit_level"] == 2, "position advances to level 2"
+        assert p["quantity"] == 5, "half of 10 closed (floor(10/2)=5)"
+
+    def test_level_1_records_partial_pnl(self, db):
+        h = self._run(db)
+        [event] = h.next_bar(104.0)
+        p = event["position"]
+        # entry 101, exit 104, qty 5 BUY -> pnl = (104 - 101) * 5 = 15.0
+        assert p["exit_qty_1"] == 5
+        assert p["exit_price_1"] == pytest.approx(104.0)
+        assert p["exit_pnl_1"] == pytest.approx(15.0)
+
+    def test_level_1_does_not_close_if_condition_not_met(self, db):
+        h = self._run(db)
+        # Price stays above 105: no exit fires
+        assert h.next_bar(107.0) == []
+        assert h.book.open_positions()[0].exit_level == 1
+
+    def test_level_1_exit_survives_reload(self, db):
+        h = self._run(db)
+        h.next_bar(104.0)       # partial close, level -> 2
+        reborn = PaperBook(db)
+        [p] = reborn.open_positions()
+        assert p.exit_level == 2
+        assert p.exit_qty_1 == 5
+        assert p.exit_price_1 == pytest.approx(104.0)
+        assert p.exit_pnl_1 == pytest.approx(15.0)
+
+    # ---- level 2: full close ----------------------------------------------------
+
+    def test_level_2_closes_the_remaining_position(self, db):
+        h = self._run(db)
+        h.next_bar(104.0)       # level 1: cross below 105 (price stays above 103)
+        [event] = h.next_bar(102.0)  # cross below 103 -> level 2
+        p = event["position"]
+        assert p["status"] == "closed"
+        assert p["exit_reason"] == "exit_rule_2"
+        assert p["exit_price"] == pytest.approx(102.0)
+        # remaining 5 * (102.0 - 101.0) = 5.0
+        assert p["realized_pnl"] == pytest.approx(5.0)
+
+    def test_level_2_does_not_fire_if_level_1_has_not_fired(self, db):
+        # A bar below 103 (also below 105) fires level 1 first, not level 2
+        h = self._run(db)
+        [event] = h.next_bar(102.0)
+        p = event["position"]
+        # Level 1 fired (crossed below 105): partial close, still open at level 2
+        assert p["status"] == "open" and p["exit_level"] == 2
+
+    def test_level_2_fires_on_the_very_next_bar_after_level_1(self, db):
+        h = self._run(db)
+        [e1] = h.next_bar(104.0)   # level 1: crosses below 105
+        assert e1["position"]["exit_level"] == 2
+        # 104 > 103, so pump to 104.5 first, then drop below 103
+        assert h.next_bar(104.5) == []   # stays at level 2, no cross yet
+        [e2] = h.next_bar(102.0)         # crosses below 103 -> level 2 closes
+        assert e2["position"]["status"] == "closed"
+
+    def test_level_2_watches_condition_2_not_condition_1_after_level_1(self, db):
+        # After level 1 fires, price bounces back above 105 then drops below 103
+        h = self._run(db)
+        [e1] = h.next_bar(104.0)        # level 1: crosses below 105
+        assert e1["position"]["exit_level"] == 2
+        # Bounce above 105 — cond_1 would "fire" again but we're at level 2 now
+        assert h.next_bar(107.0) == []
+        # Drop below 103: level 2 fires
+        [e2] = h.next_bar(102.0)
+        assert e2["position"]["status"] == "closed" and e2["position"]["exit_reason"] == "exit_rule_2"
+
+    # ---- single-exit still works ------------------------------------------------
+
+    def test_single_exit_rule_still_works(self, db):
+        # When only exit_condition is set (no exit_condition_2), it closes fully
+        h = Run(db, {"exit_condition": BELOW_102})
+        h.entered()
+        assert h.next_bar(104.0) == []  # prime above 102
+        [event] = h.next_bar(101.5)     # cross below 102
+        p = event["position"]
+        assert p["status"] == "closed" and p["exit_reason"] == "exit_rule"
+        assert p["quantity"] == 10, "full quantity, not partial"
+
+    # ---- exit_plan() stores both levels -----------------------------------------
+
+    def test_exit_plan_includes_both_conditions(self):
+        rule = rule_from_payload(
+            payload(exit_condition=BELOW_105, exit_timeframe="1H",
+                    exit_condition_2=BELOW_103, exit_timeframe_2="15m")
+        )
+        plan = rule.exit_plan()
+        assert plan["exit_condition"] == BELOW_105
+        assert plan["exit_condition_2"] == BELOW_103
+        assert plan["exit_timeframe_2"] == "15m"
+
+    def test_exit_plan_defaults_exit_timeframe_2_to_rule_timeframe(self):
+        rule = rule_from_payload(
+            payload(exit_condition=BELOW_105, exit_condition_2=BELOW_103)
+        )
+        plan = rule.exit_plan()
+        assert plan["exit_timeframe_2"] == "1H"
+
+    def test_exit_plan_sets_exit_timeframe_2_none_when_no_second_condition(self):
+        rule = rule_from_payload(payload(exit_condition=BELOW_105))
+        plan = rule.exit_plan()
+        assert plan["exit_condition_2"] is None
+        assert plan["exit_timeframe_2"] is None
+
+    # ---- rule round-trip --------------------------------------------------------
+
+    def test_two_level_exit_rule_round_trips_through_db(self, db):
+        rule = RuleRepo(db).save(rule_from_payload(
+            payload(exit_condition=BELOW_105, exit_timeframe="1H",
+                    exit_condition_2=BELOW_103, exit_timeframe_2="15m")
+        ))
+        got = RuleRepo(db).get(rule.id)
+        assert got.exit_condition == BELOW_105
+        assert got.exit_condition_2 == BELOW_103
+        assert got.exit_timeframe_2 == "15m"
+
+    # ---- stop still closes the remaining half -----------------------------------
+
+    def test_stop_hit_after_level_1_closes_remaining_half(self, db):
+        h = self._run(db)
+        h.next_bar(104.0)       # level 1: 5 shares remain
+        [closed] = h.book.on_tick(SYMBOL, 99.0)
+        assert closed.exit_reason == "stop"
+        assert closed.exit_price == pytest.approx(99.0)
+        # loss on remaining 5: (99.0 - 101.0) * 5 = -10.0
+        assert closed.realized_pnl == pytest.approx(-10.0)

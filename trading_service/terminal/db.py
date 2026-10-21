@@ -41,11 +41,12 @@ class Database:
 
     # ------------------------------------------------------------------ schema
     def ensure_schema(self) -> None:
-        """Create the terminal tables. Uses the driver directly so ``::jsonb``
-        casts in the DDL are not mistaken for bind parameters."""
+        """Create the terminal tables.  Execute via the raw DBAPI cursor so the
+        multi-statement DDL string is never paired with the empty immutabledict
+        parameters object that some psycopg2/SQLAlchemy combinations reject."""
         sql = SCHEMA_FILE.read_text()
         with self.engine.begin() as conn:
-            conn.exec_driver_sql(sql)
+            conn.connection.cursor().execute(sql)
 
     # ----------------------------------------------------------------- queries
     def rows(self, sql: str, **params: Any) -> list[dict]:
