@@ -12,6 +12,7 @@ import time
 from typing import Any, Optional
 
 from .feed.base import BrokerError
+from .sector_groups import sector_index
 from .timeframes import exchange_of
 
 EQUITY = {"NSE", "BSE"}
@@ -98,7 +99,17 @@ class BrokerAccount:
         out = parse_quote(self._post("GetQuotes", {"exch": exchange, "token": token}), symbol)
         out["point_value"] = self.instruments.point_value(symbol) if exchange not in EQUITY else 1.0
         out["quantity_unit"] = "shares" if exchange in EQUITY else "lots"
+        out["is_index"] = symbol.upper().endswith("-INDEX")
+        out["sector"], out["sector_index"] = self._sector(symbol) if exchange in EQUITY and not out["is_index"] else (None, None)
         return out
+
+    def _sector(self, symbol: str) -> tuple[Optional[str], Optional[str]]:
+        """A stock's sector and the index to judge it against (Nifty IT for an IT stock)."""
+        db = getattr(self.instruments, "db", None)
+        if db is None or not db.table_exists("symbols"):
+            return None, None
+        sector = db.scalar("SELECT sector FROM symbols WHERE tradingsymbol = :s", s=symbol)
+        return (sector or None), sector_index(sector or "")
 
     # ---------------------------------------------------------------- preview
     def preview(self, symbol: str, side: str, quantity: int, product: Optional[str] = None,
@@ -112,6 +123,8 @@ class BrokerAccount:
         price_type = price_type.upper()
         if price_type not in ("LMT", "MKT"):
             raise ValueError("price type must be LMT or MKT")
+        if symbol.upper().endswith("-INDEX"):
+            raise ValueError("an index cannot be traded; use its futures/options or the stocks in it")
         exchange = exchange_of(symbol)
         allowed = self.products().get(exchange, [])
         if product is None:

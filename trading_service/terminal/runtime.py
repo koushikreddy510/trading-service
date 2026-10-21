@@ -29,6 +29,7 @@ from .drawings import DrawingRepo
 from .engine import RuleEngine
 from .feed.base import Feed, History
 from .hub import Hub, Subscriptions
+from . import instruments
 from .instruments import Instruments
 from .market import CandleService
 from .paper import PaperBook
@@ -85,11 +86,19 @@ class Terminal:
     # ---------------------------------------------------------------- lifecycle
     async def start(self) -> None:
         self.watchlists.ensure_default(DEMO_WATCHLIST if self.mode == "demo" else ())
+        self._seed_indices()
         await self.refresh_background_subscriptions()
         self._tasks = [
             asyncio.create_task(self._run_feed(), name="terminal-feed"),
             asyncio.create_task(self._flush_loop(), name="terminal-flush"),
         ]
+
+    def _seed_indices(self) -> None:
+        """Index list in place on every start; the "Indices" watchlist only the first time (a deleted one stays deleted)."""
+        first = not self.db.scalar("SELECT EXISTS (SELECT 1 FROM terminal_instruments WHERE instrument = 'INDEX')")
+        instruments.seed_indices(self.db)
+        if first and not any(w["name"].lower() == instruments.INDEX_WATCHLIST.lower() for w in self.watchlists.list()):
+            self.watchlists.create(instruments.INDEX_WATCHLIST, [i[0] for i in instruments.INDICES])
 
     async def stop(self) -> None:
         for t in self._tasks:

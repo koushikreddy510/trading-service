@@ -13,6 +13,10 @@ by 1.00: lot size x Flattrade's price factor (`prcftr`). GOLDM is quoted per 10 
 ALUMINI is one tonne quoted per kg (1 x 1000), SILVERM is 5 kg quoted per kg (5 x 1). The price factor is not in the
 public file; it is filled in from GetSecurityInfo the first time a contract is used (see FlattradeHistory.ensure_spec).
 Stocks have no row here and a point value of 1.
+
+Indices (Nifty 50, Nifty IT, SENSEX, India VIX...) are rows too, with instrument INDEX: shown and charted for context,
+never traded. Their ids follow the Fyers style (`NSE:NIFTYIT-INDEX`) because Flattrade's own names have spaces
+("Nifty IT"); the token and Flattrade name are fixed, so the list below needs no download.
 """
 from __future__ import annotations
 
@@ -29,7 +33,72 @@ log = logging.getLogger(__name__)
 
 MCX_SCRIP_MASTER = "https://flattrade.s3.ap-south-1.amazonaws.com/scripmaster/Commodity.csv"
 FUTURES = {"FUTCOM", "FUTIDX"}      # options (OPTFUT / OPTIDX, ~16,000 rows) are left out for now
-SECTOR = {"FUTCOM": "Commodity future", "FUTIDX": "Index future"}
+SECTOR = {"FUTCOM": "Commodity future", "FUTIDX": "Index future", "INDEX": "Index"}
+INDEX_WATCHLIST = "Indices"
+
+# (our id, display name, group, exchange, Flattrade name, Flattrade token) - tokens checked against SearchScrip, Oct 2026
+INDICES: list[tuple[str, str, str, str, str, str]] = [
+    ("NSE:NIFTY50-INDEX", "NIFTY 50", "Broad market", "NSE", "Nifty 50", "26000"),
+    ("BSE:SENSEX-INDEX", "SENSEX", "Broad market", "BSE", "SENSEX", "1"),
+    ("NSE:NIFTYBANK-INDEX", "NIFTY BANK", "Broad market", "NSE", "Nifty Bank", "26009"),
+    ("NSE:FINNIFTY-INDEX", "NIFTY FIN SERVICE", "Broad market", "NSE", "Nifty Fin", "26037"),
+    ("NSE:NIFTYNEXT50-INDEX", "NIFTY NEXT 50", "Broad market", "NSE", "Nifty Next 50", "26013"),
+    ("NSE:NIFTY500-INDEX", "NIFTY 500", "Broad market", "NSE", "Nifty 500", "26004"),
+    ("NSE:NIFTYMIDCAP100-INDEX", "NIFTY MIDCAP 100", "Broad market", "NSE", "NIFTY MIDCAP 100", "26011"),
+    ("NSE:NIFTYSMLCAP100-INDEX", "NIFTY SMALLCAP 100", "Broad market", "NSE", "NIFTY SMLCAP 100", "26032"),
+    ("NSE:INDIAVIX-INDEX", "INDIA VIX", "Broad market", "NSE", "INDIAVIX", "26017"),
+    ("NSE:NIFTYIT-INDEX", "NIFTY IT", "Sector", "NSE", "Nifty IT", "26008"),
+    ("NSE:NIFTYAUTO-INDEX", "NIFTY AUTO", "Sector", "NSE", "Nifty Auto", "26029"),
+    ("NSE:NIFTYPHARMA-INDEX", "NIFTY PHARMA", "Sector", "NSE", "Nifty Pharma", "26023"),
+    ("NSE:NIFTYHEALTHCARE-INDEX", "NIFTY HEALTHCARE", "Sector", "NSE", "NIFTY HEALTHCARE", "26069"),
+    ("NSE:NIFTYFMCG-INDEX", "NIFTY FMCG", "Sector", "NSE", "Nifty FMCG", "26021"),
+    ("NSE:NIFTYMETAL-INDEX", "NIFTY METAL", "Sector", "NSE", "Nifty Metal", "26030"),
+    ("NSE:NIFTYREALTY-INDEX", "NIFTY REALTY", "Sector", "NSE", "Nifty Realty", "26018"),
+    ("NSE:NIFTYENERGY-INDEX", "NIFTY ENERGY", "Sector", "NSE", "Nifty Energy", "26020"),
+    ("NSE:NIFTYOILGAS-INDEX", "NIFTY OIL & GAS", "Sector", "NSE", "NIFTY OIL AND GAS", "26071"),
+    ("NSE:NIFTYPSUBANK-INDEX", "NIFTY PSU BANK", "Sector", "NSE", "Nifty PSU Bank", "26025"),
+    ("NSE:NIFTYPVTBANK-INDEX", "NIFTY PRIVATE BANK", "Sector", "NSE", "Nifty Pvt Bank", "26047"),
+    ("NSE:NIFTYMEDIA-INDEX", "NIFTY MEDIA", "Sector", "NSE", "Nifty Media", "26031"),
+    ("NSE:NIFTYINFRA-INDEX", "NIFTY INFRA", "Sector", "NSE", "Nifty Infra", "26019"),
+    ("NSE:NIFTYCONSRDURBL-INDEX", "NIFTY CONSUMER DURABLES", "Sector", "NSE", "NIFTY CONSR DURBL", "26070"),
+    ("NSE:NIFTYCONSUMPTION-INDEX", "NIFTY CONSUMPTION", "Sector", "NSE", "Nifty Consumption", "26036"),
+    ("NSE:NIFTYCHEMICALS-INDEX", "NIFTY CHEMICALS", "Sector", "NSE", "Nifty Chemicals", "26142"),
+    ("NSE:NIFTYCEMENT-INDEX", "NIFTY CEMENT", "Sector", "NSE", "Nifty Cement", "26150"),
+    ("NSE:NIFTYDEFENCE-INDEX", "NIFTY INDIA DEFENCE", "Sector", "NSE", "Nifty Ind Defence", "26092"),
+    ("NSE:NIFTYCOMMODITIES-INDEX", "NIFTY COMMODITIES", "Sector", "NSE", "Nifty Commodities", "26035"),
+    ("NSE:NIFTYCPSE-INDEX", "NIFTY CPSE", "Sector", "NSE", "Nifty CPSE", "26041"),
+    ("NSE:NIFTYPSE-INDEX", "NIFTY PSE", "Sector", "NSE", "Nifty PSE", "26024"),
+    ("NSE:NIFTYSERVICES-INDEX", "NIFTY SERVICES SECTOR", "Sector", "NSE", "Nifty Serv Sector", "26026"),
+]
+
+
+def is_index(symbol: str) -> bool:
+    return symbol.upper().endswith("-INDEX")
+
+
+def seed_indices(db: Database) -> int:
+    """Put the index list in place (no network). Run on every start, so a new index in the list appears by itself."""
+    rows = [{"symbol": sid, "exchange": ex, "token": tok, "tsym": ftsym, "underlying": name}
+            for sid, name, _group, ex, ftsym, tok in INDICES]
+    from sqlalchemy import text
+
+    with db.tx() as conn:
+        conn.execute(text(
+            """
+            INSERT INTO terminal_instruments (symbol, exchange, token, tsym, underlying, instrument, expiry, lot_size)
+            VALUES (:symbol, :exchange, :token, :tsym, :underlying, 'INDEX', NULL, 1)
+            ON CONFLICT (symbol) DO UPDATE SET token = EXCLUDED.token, tsym = EXCLUDED.tsym, underlying = EXCLUDED.underlying,
+                instrument = 'INDEX', updated_at = now()
+            """
+        ), rows)
+        conn.execute(text(
+            """
+            INSERT INTO terminal_broker_tokens (symbol, exchange, token, tsym) VALUES (:symbol, :exchange, :token, :tsym)
+            ON CONFLICT (symbol) DO UPDATE SET exchange = EXCLUDED.exchange, token = EXCLUDED.token, tsym = EXCLUDED.tsym,
+                resolved_at = now()
+            """
+        ), rows)
+    return len(rows)
 
 
 def _download(url: str) -> str:
@@ -100,8 +169,9 @@ def search(db: Database, query: str, limit: int) -> list[dict]:
         """
         SELECT symbol, exchange, underlying, instrument, expiry, lot_size
           FROM terminal_instruments
-         WHERE underlying LIKE :like OR tsym LIKE :like
-         ORDER BY (underlying = :q) DESC, length(underlying), underlying, expiry
+         WHERE underlying LIKE :like OR upper(tsym) LIKE :like
+            OR (instrument = 'INDEX' AND (underlying LIKE '%' || :like OR symbol LIKE '%' || :like))
+         ORDER BY (underlying = :q) DESC, (instrument = 'INDEX') DESC, length(underlying), underlying, expiry
          LIMIT :n
         """,
         like=like, q=q, n=limit,
@@ -109,9 +179,9 @@ def search(db: Database, query: str, limit: int) -> list[dict]:
     return [
         {
             "symbol": r["symbol"], "exchange": r["exchange"],
-            "name": f"{r['underlying']} {r['expiry']:%d %b %Y} · lot {r['lot_size']}",
+            "name": r["underlying"] if r["instrument"] == "INDEX" else f"{r['underlying']} {r['expiry']:%d %b %Y} · lot {r['lot_size']}",
             "sector": SECTOR.get(r["instrument"], r["instrument"]),
-            "rank": 0 if r["underlying"] == q else 1,
+            "rank": 0 if r["underlying"] == q or (r["instrument"] == "INDEX" and r["underlying"].startswith(q)) else 1,
         }
         for r in rows
     ]

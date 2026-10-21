@@ -156,3 +156,66 @@ class TestMcxSession:
 
     def test_nse_is_unaffected(self):
         assert tfm.session_close(date(2026, 11, 2), "NSE") == ist(2026, 11, 2, 15, 30)
+
+
+class TestIndices:
+    def test_indices_are_seeded_with_their_flattrade_name_and_token(self, db):
+        assert instruments.seed_indices(db) == len(instruments.INDICES)
+        assert db.row("SELECT exchange, token, tsym FROM terminal_broker_tokens WHERE symbol = 'NSE:NIFTYIT-INDEX'") == {"exchange": "NSE", "token": "26008", "tsym": "Nifty IT"}
+        assert db.row("SELECT exchange, token FROM terminal_broker_tokens WHERE symbol = 'BSE:SENSEX-INDEX'") == {"exchange": "BSE", "token": "1"}
+
+    def test_search_finds_indices_by_name_ahead_of_stocks(self, db):
+        instruments.seed_indices(db)
+        db.execute("INSERT INTO symbols (tradingsymbol, name, sector) VALUES ('NSE:NIFTYBEES-EQ', 'Nippon Nifty BeES', 'Mutual Fund Scheme')")
+        assert symbols.search(db, "nifty it")[0] == {"symbol": "NSE:NIFTYIT-INDEX", "exchange": "NSE", "name": "NIFTY IT", "sector": "Index"}
+        assert symbols.search(db, "sensex")[0]["symbol"] == "BSE:SENSEX-INDEX"
+        found = [r["symbol"] for r in symbols.search(db, "nifty", limit=50)]
+        assert found.index("NSE:NIFTY50-INDEX") < found.index("NSE:NIFTYBEES-EQ")
+        assert symbols.search(db, "auto")[0]["symbol"] == "NSE:NIFTYAUTO-INDEX"      # by the sector word alone
+
+    def test_a_refresh_of_mcx_contracts_keeps_the_indices(self, db, loaded):
+        instruments.seed_indices(db)
+        instruments.refresh(db, fetch=lambda url: SCRIP_MASTER, today=date(2026, 12, 1))
+        assert db.scalar("SELECT count(*) FROM terminal_instruments WHERE instrument = 'INDEX'") == len(instruments.INDICES)
+
+    def test_index_daily_bars_come_from_the_broker_by_its_own_name(self, db):
+        from trading_service.terminal.feed.flattrade import FlattradeHistory, TokenResolver
+        from trading_service.terminal.market import uses_broker_daily
+        instruments.seed_indices(db)
+        asked = []
+
+        class Api:
+            def eod_chart(self, sym, a, b):
+                asked.append(sym)
+                return []
+
+        FlattradeHistory(Api(), TokenResolver(Api(), db)).fetch_1d("NSE:NIFTYIT-INDEX", date(2026, 1, 1), TODAY)
+        assert asked == ["NSE:Nifty IT"]
+        assert uses_broker_daily("NSE:NIFTYIT-INDEX") and uses_broker_daily("MCX:SILVERM30NOV26") and not uses_broker_daily("NSE:SBIN-EQ")
+
+    def test_a_terminal_makes_the_indices_watchlist_once(self, db):
+        from trading_service.terminal.feed.mock import MockFeed, MockHistory, SimClock
+        from trading_service.terminal.runtime import Terminal
+        clock = SimClock(ist(2026, 10, 19, 10, 0, 30), speed=0)
+        t = Terminal(db, MockFeed(clock), MockHistory(), clock.now, mode="test", hub_interval=0)
+        t._seed_indices()
+        (wl,) = [w for w in t.watchlists.list() if w["name"] == "Indices"]
+        assert wl["symbols"][:3] == ["NSE:NIFTY50-INDEX", "BSE:SENSEX-INDEX", "NSE:NIFTYBANK-INDEX"]
+        t.watchlists.delete(wl["id"])
+        t._seed_indices()                                  # the next start
+        assert not [w for w in t.watchlists.list() if w["name"] == "Indices"]
+
+
+class TestSectorIndex:
+    def test_a_stock_is_judged_against_its_sector_index(self):
+        from trading_service.terminal.sector_groups import sector_index
+        assert sector_index("Private Sector Bank") == "NSE:NIFTYPVTBANK-INDEX"
+        assert sector_index("Computers - Software & Consulting") == "NSE:NIFTYIT-INDEX"
+        assert sector_index("Commercial Vehicles") == "NSE:NIFTYAUTO-INDEX"
+        assert sector_index("Residential Commercial Projects") == "NSE:NIFTYREALTY-INDEX"
+        assert sector_index("") == sector_index("Something new") == "NSE:NIFTY50-INDEX"
+
+    def test_every_mapped_index_exists(self):
+        from trading_service.terminal.sector_groups import GROUP_INDEX, INDUSTRY_INDEX
+        ids = {i[0] for i in instruments.INDICES}
+        assert set(GROUP_INDEX.values()) | set(INDUSTRY_INDEX.values()) <= ids

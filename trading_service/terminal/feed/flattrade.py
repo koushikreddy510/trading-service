@@ -156,6 +156,14 @@ class TokenResolver:
         self.db = db
         self._memory: dict[str, tuple[str, str]] = {}   # symbol -> (exchange, token)
 
+    def broker_name(self, symbol: str) -> str:
+        """Flattrade's trading symbol: the part after ':' for stocks and futures, its own name for indices ("Nifty IT")."""
+        if self.db is not None:
+            row = self.db.row("SELECT tsym FROM terminal_broker_tokens WHERE symbol = :s", s=symbol)
+            if row:
+                return row["tsym"]
+        return symbol.split(":", 1)[1] if ":" in symbol else symbol
+
     def resolve(self, symbol: str) -> tuple[str, str]:
         if symbol in self._memory:
             return self._memory[symbol]
@@ -199,7 +207,8 @@ class FlattradeHistory:
     def fetch_1d(self, symbol: str, start: date, end: date) -> list[tuple[date, Candle]]:
         a = datetime.combine(start, datetime.min.time(), tzinfo=IST)
         b = datetime.combine(end, datetime.max.time(), tzinfo=IST)
-        return parse_eod(self.api.eod_chart(symbol, a, b), exchange_of(symbol))
+        exchange = exchange_of(symbol)
+        return parse_eod(self.api.eod_chart(f"{exchange}:{self.resolver.broker_name(symbol)}", a, b), exchange)
 
     def fetch_1m(self, symbol: str, start: datetime, end: datetime) -> list[Candle]:
         exchange, token = self.resolver.resolve(symbol)

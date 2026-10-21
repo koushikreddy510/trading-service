@@ -445,21 +445,68 @@ def get_parent_sector(sector: str) -> str:
     return SECTOR_GROUP_MAP.get(sector, "Others")
 
 
-# NSE sector indices: parent sector -> index symbol (for display/reference)
-# Note: Fyers NSE_CM is equity-only; these indices are for context. Add to symbols when index master is available.
-SECTOR_INDICES = {
-    "Automobiles": "NIFTY AUTO",
-    "Banking & Finance": "NIFTY BANK",
-    "IT & Technology": "NIFTY IT",
-    "Pharma & Healthcare": "NIFTY PHARMA",
-    "FMCG & Consumer": "NIFTY FMCG",
-    "Metals & Mining": "NIFTY METAL",
-    "Oil & Gas": "NIFTY ENERGY",
-    "Power & Energy": "NIFTY ENERGY",
-    "Realty": "NIFTY REALTY",
+# The NSE index a stock's moves are best judged against (ids from instruments.INDICES). Granular industries first
+# (a private bank against Nifty Private Bank, not the whole of finance), then the parent group.
+INDUSTRY_INDEX = {
+    "Private Sector Bank": "NSE:NIFTYPVTBANK-INDEX",
+    "Public Sector Bank": "NSE:NIFTYPSUBANK-INDEX",
+    "Other Bank": "NSE:NIFTYBANK-INDEX",
+    "Banks - Regional": "NSE:NIFTYBANK-INDEX",
+    "Banks - Diversified": "NSE:NIFTYBANK-INDEX",
+    "Pharmaceuticals": "NSE:NIFTYPHARMA-INDEX",
+    "Drug Manufacturers - Specialty & Generic": "NSE:NIFTYPHARMA-INDEX",
+    "Drug Manufacturers - General": "NSE:NIFTYPHARMA-INDEX",
+    "Cement & Cement Products": "NSE:NIFTYCEMENT-INDEX",
+    "Building Materials": "NSE:NIFTYCEMENT-INDEX",
+    "Consumer Electronics": "NSE:NIFTYCONSRDURBL-INDEX",
+    "Household Appliances": "NSE:NIFTYCONSRDURBL-INDEX",
+    "Gems Jewellery And Watches": "NSE:NIFTYCONSRDURBL-INDEX",
+    "Aerospace & Defense": "NSE:NIFTYDEFENCE-INDEX",
+    "Residential Commercial Projects": "NSE:NIFTYREALTY-INDEX",
+    "Real Estate related services": "NSE:NIFTYREALTY-INDEX",
+    "Real Estate - Development": "NSE:NIFTYREALTY-INDEX",
+    "Mutual Fund Scheme": "NSE:NIFTY50-INDEX",        # ETFs: the market, not the finance sector
 }
-# Alias for Metals & Mining (NSE uses "NIFTY METAL")
-SECTOR_INDICES["Metals & Mining"] = "NIFTY METAL"
+GROUP_INDEX = {
+    "Automobiles": "NSE:NIFTYAUTO-INDEX",
+    "Banking & Finance": "NSE:FINNIFTY-INDEX",
+    "Insurance": "NSE:FINNIFTY-INDEX",
+    "Asset Management": "NSE:FINNIFTY-INDEX",
+    "Financial Services": "NSE:FINNIFTY-INDEX",
+    "IT & Technology": "NSE:NIFTYIT-INDEX",
+    "Technology": "NSE:NIFTYIT-INDEX",
+    "Pharma & Healthcare": "NSE:NIFTYHEALTHCARE-INDEX",
+    "Healthcare": "NSE:NIFTYHEALTHCARE-INDEX",
+    "FMCG & Consumer": "NSE:NIFTYFMCG-INDEX",
+    "Food & Beverages": "NSE:NIFTYFMCG-INDEX",
+    "Consumer Defensive": "NSE:NIFTYFMCG-INDEX",
+    "Consumer Cyclical": "NSE:NIFTYCONSUMPTION-INDEX",
+    "Retail & E-Commerce": "NSE:NIFTYCONSUMPTION-INDEX",
+    "Metals & Mining": "NSE:NIFTYMETAL-INDEX",
+    "Basic Materials": "NSE:NIFTYMETAL-INDEX",
+    "Oil & Gas": "NSE:NIFTYOILGAS-INDEX",
+    "Energy": "NSE:NIFTYENERGY-INDEX",
+    "Power & Energy": "NSE:NIFTYENERGY-INDEX",
+    "Utilities": "NSE:NIFTYENERGY-INDEX",
+    "Realty": "NSE:NIFTYREALTY-INDEX",
+    "Real Estate": "NSE:NIFTYREALTY-INDEX",
+    "Media & Entertainment": "NSE:NIFTYMEDIA-INDEX",
+    "Communication Services": "NSE:NIFTYMEDIA-INDEX",
+    "Chemicals": "NSE:NIFTYCHEMICALS-INDEX",
+    "Construction & Infra": "NSE:NIFTYINFRA-INDEX",
+    "Capital Goods": "NSE:NIFTYINFRA-INDEX",
+    "Industrials": "NSE:NIFTYINFRA-INDEX",
+    "Telecom": "NSE:NIFTYINFRA-INDEX",
+    "Defence & Aerospace": "NSE:NIFTYDEFENCE-INDEX",
+    "Services & Others": "NSE:NIFTYSERVICES-INDEX",
+}
+
+
+def sector_index(sector: str) -> str:
+    """The sector index for a stock's `symbols.sector`, or Nifty 50 when its sector has none."""
+    sector = (sector or "").strip()
+    return INDUSTRY_INDEX.get(sector) or GROUP_INDEX.get(get_parent_sector(sector)) or "NSE:NIFTY50-INDEX"
+
 
 # Ordered list of parent sectors for consistent UI display.
 # Includes both the original NSE-style groups and Yahoo Finance's 11 broad sectors

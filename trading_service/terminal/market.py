@@ -40,6 +40,11 @@ DAILY_BACKFILL_DAYS = 400        # broker daily bars for symbols the data-store 
 BROKER_DAILY_EXCHANGES = {"MCX"}
 
 
+def uses_broker_daily(symbol: str) -> bool:
+    """MCX contracts and indices: the data-store's ohlcv_1d has stocks only, so their daily bars come from the broker."""
+    return exchange_of(symbol) in BROKER_DAILY_EXCHANGES or symbol.upper().endswith("-INDEX")
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -113,7 +118,7 @@ class DailyStore:
 
     def load(self, symbol: str, limit: int) -> list[Candle]:
         exchange = exchange_of(symbol)
-        table, column = ("terminal_ohlcv_1d", "symbol") if exchange in BROKER_DAILY_EXCHANGES else ("ohlcv_1d", "tradingsymbol")
+        table, column = ("terminal_ohlcv_1d", "symbol") if uses_broker_daily(symbol) else ("ohlcv_1d", "tradingsymbol")
         if not self.db.table_exists(table):
             return []
         rows = self.db.rows(
@@ -164,7 +169,7 @@ class CandleService:
     def _broker_extras(self, symbol: str) -> None:
         """What only the broker can give for a futures contract: its price factor (for P&L) and its daily bars
         (the data-store has none). Daily bars are fetched up to yesterday; today is built from live minutes."""
-        if exchange_of(symbol) not in BROKER_DAILY_EXCHANGES:
+        if not uses_broker_daily(symbol):
             return
         try:
             if hasattr(self.history, "ensure_spec"):

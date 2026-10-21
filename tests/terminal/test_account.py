@@ -103,6 +103,11 @@ def test_an_existing_position_in_the_same_contract_and_product_is_flagged():
     assert account(FakeApi()).preview("MCX:SILVERM30NOV26", "BUY", 1)["existing_position"] is None
 
 
+def test_an_index_can_be_quoted_but_not_ordered():
+    with pytest.raises(ValueError, match="index cannot be traded"):
+        account(FakeApi()).preview("NSE:NIFTYIT-INDEX", "BUY", 1)
+
+
 def test_bad_input_is_refused():
     a = account(FakeApi())
     for args in (("MCX:SILVERM30NOV26", "HOLD", 1), ("MCX:SILVERM30NOV26", "BUY", 0)):
