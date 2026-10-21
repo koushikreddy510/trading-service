@@ -10,7 +10,8 @@ the user manages by hand); nothing here may touch them:
 * live orders are off per account until switched on; a global kill switch stops everything;
 * each order is capped in value, and the number of orders per day is capped;
 * "market" orders are sent as limit orders just through the spread (Flattrade's API v2 takes limit orders only);
-* a stop-loss (SL) only closes what our own fills hold, and all our pending stops together never exceed it.
+* a stop-loss (SL) only closes what our own fills hold, and all our pending stops together never exceed it;
+* an order that adds exposure must pass the broker's margin calculator (MCX has its own funds); exits never wait on it.
 
 Tracking: open orders are refreshed from the broker's order book every few seconds until they finish.
 """
@@ -245,7 +246,14 @@ class OrderService:
             covered = self.repo.pending_stop_units(account, symbol, product, side, exclude=replacing)
             if units > held - covered:
                 raise OrderRefused(f"a stop-loss only protects what we hold: {held} units held, {covered} already covered by stops")
-        external = broker.net_position(symbol, product) - self.repo.our_net(account, symbol, product)
+        held = self.repo.our_net(account, symbol, product)
+        reduces = trigger is not None or (held > 0 and side == "SELL") or (held < 0 and side == "BUY")
+        if not reduces and hasattr(broker, "margin_check"):     # an exit or a stop is never held back for margin
+            ok, remark, margin = broker.margin_check(symbol, side, units, product, px)
+            if not ok:
+                segment = "commodity (MCX)" if exchange == "MCX" else "equity" if exchange in EQUITY else "derivatives"
+                raise OrderRefused(f"not enough funds in the {segment} segment for this order (margin ₹{margin:,.0f}; broker: {remark})")
+        external = broker.net_position(symbol, product) - held
         if external:
             raise OrderRefused(f"the account already holds {external:+d} units of {symbol} as {allowed[product]['name']} that are not ours; "
                                "an order here would net into that position, so it is refused")

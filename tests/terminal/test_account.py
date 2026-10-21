@@ -67,7 +67,7 @@ def test_funds_are_cached_briefly():
     a = account(api)
     a.funds()
     a.funds()
-    assert [c for c, _ in api.calls].count("Limits") == 1
+    assert [c for c, _ in api.calls].count("Limits") == 2          # one refresh: equity + commodity segment
 
 
 def test_a_futures_quote_has_depth_lot_size_and_point_value():

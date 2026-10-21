@@ -96,8 +96,21 @@ class BrokerAccount:
         if self._funds and now - self._funds[0] < FUNDS_CACHE_SECONDS:
             return self._funds[1]
         out = parse_limits(self._post("Limits", {"actid": self.account_id}))
+        try:                                   # MCX has its own funds at Flattrade (equity money does not cover it)
+            out["commodity"] = parse_limits(self._post("Limits", {"actid": self.account_id, "seg": "COM"}))["available"]
+        except BrokerError:
+            out["commodity"] = None
         self._funds = (now, out)
         return out
+
+    def margin_check(self, symbol: str, side: str, units: int, product: str, price: float) -> tuple[bool, str, float]:
+        """The broker's own calculator for this order: (enough funds?, its remark, margin). Calculates only."""
+        m = self._post("GetOrderMargin", {
+            "actid": self.account_id, "exch": exchange_of(symbol), "tsym": self.resolver.broker_name(symbol), "qty": str(units),
+            "prc": str(price), "prctyp": "LMT", "prd": product, "trantype": order_side(side),
+        })
+        remark = str(m.get("remarks") or "")
+        return remark not in ("Insufficient Balance", NOT_ACTIVATED), remark, _f(m, "ordermargin")
 
     def account_products(self) -> dict[str, set[str]]:
         """Per exchange, the product codes the broker lists for this account (UserDetails `prarr`)."""

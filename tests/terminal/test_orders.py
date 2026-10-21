@@ -211,3 +211,14 @@ def test_live_positions_come_from_our_fills_with_average_cost_and_pnl(setup):
     (p,) = svc.positions(lambda s: 965.0)
     assert (p["side"], p["units"], p["avg_price"], p["realized"]) == ("BUY", 3, 955.0, 15.0)
     assert p["unrealized"] == pytest.approx(30.0) and [s["trigger_price"] for s in p["stops"]] == [940.0]
+
+
+def test_an_entry_without_funds_in_its_segment_is_refused_but_an_exit_never_is(setup):
+    svc, broker, _ = setup
+    _hold(svc, broker, 2)
+    broker.margin_check = lambda symbol, side, units, product, price: (False, "Insufficient Balance", 1500.0)
+    with pytest.raises(OrderRefused, match="not enough funds in the equity segment"):
+        svc.place("flattrade", "NSE:SBIN-EQ", "BUY", 1, "I", "LMT", 950)
+    svc.place("flattrade", "NSE:SBIN-EQ", "SELL", 1, "I", "SL", trigger_price=945.0)     # a stop still goes
+    svc.place("flattrade", "NSE:SBIN-EQ", "SELL", 1, "I", "LMT", 960.0)                  # and so does an exit
+    assert len(broker.sent) == 3
