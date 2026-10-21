@@ -29,7 +29,8 @@ log = logging.getLogger(__name__)
 
 EQUITY = {"NSE", "BSE"}
 KILL = "*"                                   # the settings row that is the global kill switch
-DEFAULTS = {"live_enabled": False, "max_order_value": 20000.0, "max_orders_per_day": 20}
+# require_approval: a live rule's entry waits for a person (approval_minutes to decide); stops and exits never wait
+DEFAULTS = {"live_enabled": False, "max_order_value": 20000.0, "max_orders_per_day": 20, "require_approval": True, "approval_minutes": 5}
 MARKETABLE_PCT = 0.3                         # a "market" order is a limit this far through the touch
 OPEN = ("submitting", "open")
 
@@ -49,7 +50,8 @@ class LiveSettings:
         self.db = db
 
     def get(self, account: str) -> dict:
-        row = self.db.row("SELECT live_enabled, max_order_value, max_orders_per_day FROM terminal_live_settings WHERE account = :a", a=account)
+        row = self.db.row("SELECT live_enabled, max_order_value, max_orders_per_day, require_approval, approval_minutes "
+                          "FROM terminal_live_settings WHERE account = :a", a=account)
         out = dict(DEFAULTS, **({k: v for k, v in row.items() if v is not None} if row else {}))
         if account == KILL and not row:
             out["live_enabled"] = True       # the kill switch starts released; accounts start switched off
@@ -58,16 +60,18 @@ class LiveSettings:
     def set(self, account: str, **changes: Any) -> dict:
         cur = self.get(account)
         cur.update({k: v for k, v in changes.items() if k in DEFAULTS and v is not None})
-        if cur["max_order_value"] <= 0 or cur["max_orders_per_day"] < 1:
-            raise OrderRefused("limits must be positive")
+        if cur["max_order_value"] <= 0 or cur["max_orders_per_day"] < 1 or not 1 <= int(cur["approval_minutes"]) <= 60:
+            raise OrderRefused("limits must be positive (approval window 1-60 minutes)")
         self.db.execute(
             """
-            INSERT INTO terminal_live_settings (account, live_enabled, max_order_value, max_orders_per_day, updated_at)
-            VALUES (:a, :e, :v, :n, now())
+            INSERT INTO terminal_live_settings (account, live_enabled, max_order_value, max_orders_per_day, require_approval, approval_minutes, updated_at)
+            VALUES (:a, :e, :v, :n, :r, :m, now())
             ON CONFLICT (account) DO UPDATE SET live_enabled = EXCLUDED.live_enabled, max_order_value = EXCLUDED.max_order_value,
-                max_orders_per_day = EXCLUDED.max_orders_per_day, updated_at = now()
+                max_orders_per_day = EXCLUDED.max_orders_per_day, require_approval = EXCLUDED.require_approval,
+                approval_minutes = EXCLUDED.approval_minutes, updated_at = now()
             """,
             a=account, e=bool(cur["live_enabled"]), v=float(cur["max_order_value"]), n=int(cur["max_orders_per_day"]),
+            r=bool(cur["require_approval"]), m=int(cur["approval_minutes"]),
         )
         return self.get(account)
 

@@ -362,3 +362,27 @@ CREATE TABLE IF NOT EXISTS terminal_live_links (
 );
 ALTER TABLE terminal_orders ADD COLUMN IF NOT EXISTS order_type TEXT;         -- as asked: LMT | MKT (sent as a marketable limit) | SL
 UPDATE terminal_orders SET order_type = CASE WHEN trigger_price IS NOT NULL THEN 'SL' ELSE 'LMT' END WHERE order_type IS NULL;
+
+-- Approval before a live rule's entry (live_mirror.py). Stops and exits of an approved position never wait.
+ALTER TABLE terminal_live_settings ADD COLUMN IF NOT EXISTS require_approval BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE terminal_live_settings ADD COLUMN IF NOT EXISTS approval_minutes INTEGER NOT NULL DEFAULT 5;
+CREATE TABLE IF NOT EXISTS terminal_approvals (
+    id           TEXT PRIMARY KEY,
+    position_id  TEXT NOT NULL,
+    rule_id      TEXT,
+    account      TEXT NOT NULL,
+    product      TEXT NOT NULL,
+    symbol       TEXT NOT NULL,
+    side         TEXT NOT NULL,
+    quantity     INTEGER NOT NULL,
+    signal_price DOUBLE PRECISION,
+    stop         DOUBLE PRECISION,
+    target       DOUBLE PRECISION,
+    reason       TEXT,
+    status       TEXT NOT NULL DEFAULT 'pending',     -- pending | approved | rejected | expired | failed
+    note         TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at   TIMESTAMPTZ NOT NULL,
+    decided_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_terminal_approvals_status ON terminal_approvals (status, expires_at);

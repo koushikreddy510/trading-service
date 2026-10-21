@@ -91,7 +91,8 @@ class Terminal:
             notify=lambda text, channel="orders": self.notifier.send(text, channel=channel),
             broadcast=self.hub.broadcast,
         )
-        self.mirror = LiveMirror(db, self.orders, notify=lambda text: self.notifier.send(text, channel="orders"), clock=clock)
+        self.mirror = LiveMirror(db, self.orders, notify=lambda text: self.notifier.send(text, channel="orders"), clock=clock,
+                                 broadcast=self.hub.broadcast)
         self.hub.listeners.append(self.mirror.on_event)
         self._tasks: list[asyncio.Task] = []
         self._backfilled: dict[str, datetime] = {}
@@ -172,8 +173,9 @@ class Terminal:
         while True:
             try:
                 self.close_for_cutoff()
+                self.mirror.expire_due()                  # approvals nobody decided on in time
             except Exception:
-                log.exception("intraday cut-off failed")
+                log.exception("intraday cut-off / approval expiry failed")
             await asyncio.sleep(30)
 
     def close_for_cutoff(self) -> list[dict]:

@@ -3,7 +3,8 @@
 A rule with `execution = {account, product}` keeps trading on paper exactly as before; every change to its paper
 position is repeated on the account:
 
-    paper opens            -> live entry (marketable limit), quantity = the paper quantity
+    paper opens            -> a pending approval (when the account requires one; the default), then on approval
+                              the live entry (marketable limit), quantity = the paper quantity
     entry fills            -> protective stop-loss at the paper stop, for exactly the filled quantity
     paper stop tightens    -> the same broker stop order is modified (a trailing step)
     paper exit level 1     -> the stop shrinks to what stays, then the first part is sold
@@ -71,8 +72,10 @@ class LinkRepo:
 
 class LiveMirror:
     def __init__(self, db: Database, orders: OrderService, notify: Optional[Callable[[str], None]] = None,
-                 clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc), background: bool = True):
+                 clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc), background: bool = True,
+                 broadcast: Optional[Callable[[dict], None]] = None):
         self.db, self.orders = db, orders
+        self.broadcast = broadcast or (lambda event: None)
         self.links, self.rules = LinkRepo(db), RuleRepo(db)
         self.notify = notify or (lambda text: None)
         self.clock = clock
@@ -110,7 +113,12 @@ class LiveMirror:
             if p["status"] == "open" and p.get("exit_level", 1) == 1:
                 self._maybe_enter(p)
             return
-        if link["state"] != "live":
+        if link["state"] == "awaiting_approval" and p["status"] == "closed":
+            a = self.db.row("SELECT * FROM terminal_approvals WHERE position_id = :p AND status = 'pending'", p=p["id"])
+            if a:
+                self._close_approval(a, "expired", "the paper position closed before approval")
+            return
+        if link["state"] not in ("live", "entering"):
             return
         if p["status"] == "closed":
             self._close(link, p.get("exit_reason") or "closed")
@@ -133,21 +141,110 @@ class LiveMirror:
             self.links.insert(**{**row, "state": "skipped", "note": "too close to the intraday cut-off"})
             self.notify(f"⏭ Live entry skipped for {rule.name or rule.id} ({p['symbol']}): too close to the intraday cut-off")
             return
+        limits = self.orders.settings.get(account)
+        if limits["require_approval"]:
+            self._ask_approval(p, rule, row, int(limits["approval_minutes"]))
+            return
+        self.links.insert(**{**row, "state": "entering"})
+        self._send_entry(p["id"], rule.id, rule.name, account, p["symbol"], p["side"], int(p["quantity"]), product)
+
+    def _send_entry(self, position_id: str, rule_id: str, rule_name: str, account: str, symbol: str, side: str, qty: int,
+                    product: str) -> bool:
         try:
-            self.orders.place(account, p["symbol"], p["side"], int(p["quantity"]), product, "MKT", source=f"rule:{rule.id}",
-                              link=p["id"], purpose="entry")
+            self.orders.place(account, symbol, side, qty, product, "MKT", source=f"rule:{rule_id}", link=position_id, purpose="entry")
         except OrderRefused as e:
-            self.links.insert(**{**row, "state": "refused", "note": str(e)[:300]})
-            self.notify(f"⛔ Live entry refused for {rule.name or rule.id} ({p['side']} {p['quantity']} {p['symbol']}): {e}")
-            return
+            self.links.update(position_id, state="refused", note=str(e)[:300])
+            self.notify(f"⛔ Live entry refused for {rule_name or rule_id} ({side} {qty} {symbol}): {e}")
+            return False
         except Exception as e:  # noqa: BLE001 - recorded by the order service already
-            self.links.insert(**{**row, "state": "failed", "note": str(e)[:300]})
-            return
-        self.links.insert(**row)
+            self.links.update(position_id, state="failed", note=str(e)[:300])
+            return False
+        self.links.update(position_id, state="live", note=None)
+        return True
+
+    # -------------------------------------------------------------- approvals
+    def _ask_approval(self, p: dict, rule: Any, row: dict, minutes: int) -> None:
+        from .db import new_id
+
+        aid = new_id()
+        expires = self.clock() + timedelta(minutes=minutes)
+        self.links.insert(**{**row, "state": "awaiting_approval", "note": f"approval {aid}"})
+        self.db.execute(
+            """
+            INSERT INTO terminal_approvals (id, position_id, rule_id, account, product, symbol, side, quantity, signal_price, stop, target,
+                                            reason, expires_at)
+            VALUES (:id, :pid, :rid, :acc, :prd, :sym, :side, :qty, :px, :stop, :target, :reason, :exp)
+            """,
+            id=aid, pid=p["id"], rid=rule.id, acc=row["account"], prd=row["product"], sym=p["symbol"], side=p["side"], qty=int(p["quantity"]),
+            px=p.get("entry_price"), stop=p.get("stop"), target=p.get("target"), reason=self._signal_reason(p), exp=expires,
+        )
+        product = {"I": "Intraday", "F": "MTF", "M": "NRML"}.get(row["product"], row["product"])
+        self.notify(f"⏳ *Approval needed* · {p['side']} {p['quantity']} {p['symbol']} · {product} · rule “{rule.name or rule.id}”\n"
+                    f"signal @ ₹{p.get('entry_price')} · stop ₹{p.get('stop')}" + (f" · target ₹{p['target']}" if p.get("target") else "")
+                    + f"\nApprove in the Workspace (Orders → Approvals) within {minutes} min, or it expires.")
+        self.broadcast({"type": "approval", "approval": self.approval(aid)})
+
+    def _signal_reason(self, p: dict) -> Optional[str]:
+        return self.db.scalar("SELECT reason FROM terminal_signals WHERE id = :s", s=p.get("signal_id")) if p.get("signal_id") else None
+
+    def approval(self, approval_id: str) -> Optional[dict]:
+        row = self.db.row("SELECT * FROM terminal_approvals WHERE id = :i", i=approval_id)
+        if row is None:
+            return None
+        out = dict(row)
+        for k in ("created_at", "expires_at", "decided_at"):
+            if out.get(k) is not None:
+                out[k] = out[k].isoformat()
+        out["rule_name"] = self.db.scalar("SELECT name FROM terminal_rules WHERE id = :i", i=row["rule_id"]) if row["rule_id"] else None
+        return out
+
+    def approvals(self, pending_only: bool = False) -> list[dict]:
+        sql = "SELECT id FROM terminal_approvals" + (" WHERE status = 'pending'" if pending_only else " WHERE created_at >= now() - interval '2 days'")
+        return [self.approval(r["id"]) for r in self.db.rows(sql + " ORDER BY created_at DESC LIMIT 50")]
+
+    def decide(self, approval_id: str, approve: bool) -> dict:
+        """A person's decision. Approving sends the entry now (all order checks still apply); stops and exits follow by themselves."""
+        a = self.db.row("SELECT * FROM terminal_approvals WHERE id = :i", i=approval_id)
+        if a is None:
+            raise OrderRefused("no such approval")
+        if a["status"] != "pending":
+            raise OrderRefused(f"already {a['status']}")
+        if self.clock() > a["expires_at"]:
+            self._close_approval(a, "expired", "the approval window had passed")
+            raise OrderRefused("this approval has expired")
+        open_now = self.db.scalar("SELECT status FROM terminal_paper_positions WHERE id = :p", p=a["position_id"]) == "open"
+        if approve and not open_now:
+            self._close_approval(a, "expired", "the paper position closed before approval")
+            raise OrderRefused("the rule's position has already closed; nothing to enter")
+        if not approve:
+            self._close_approval(a, "rejected", "rejected by a person")
+            return self.approval(approval_id)  # type: ignore[return-value]
+        self.db.execute("UPDATE terminal_approvals SET status = 'approved', decided_at = now() WHERE id = :i", i=approval_id)
+        self.links.update(a["position_id"], state="entering", note=f"approved {approval_id}")
+        ok = self._send_entry(a["position_id"], a["rule_id"], "", a["account"], a["symbol"], a["side"], a["quantity"], a["product"])
+        if not ok:
+            link = self.links.get(a["position_id"]) or {}
+            self.db.execute("UPDATE terminal_approvals SET status = 'failed', note = :n WHERE id = :i", n=link.get("note"), i=approval_id)
+        self.broadcast({"type": "approval", "approval": self.approval(approval_id)})
+        return self.approval(approval_id)  # type: ignore[return-value]
+
+    def _close_approval(self, a: dict, status: str, note: str) -> None:
+        self.db.execute("UPDATE terminal_approvals SET status = :s, note = :n, decided_at = now() WHERE id = :i AND status = 'pending'",
+                        s=status, n=note, i=a["id"])
+        self.links.update(a["position_id"], state=status, note=note)
+        if status == "expired":
+            self.notify(f"⌛ Approval expired · {a['side']} {a['quantity']} {a['symbol']}: {note}; no live order was sent")
+        self.broadcast({"type": "approval", "approval": self.approval(a["id"])})
+
+    def expire_due(self) -> int:
+        due = self.db.rows("SELECT * FROM terminal_approvals WHERE status = 'pending' AND expires_at < :now", now=self.clock())
+        for a in due:
+            self._close_approval(a, "expired", "nobody approved it in time")
+        return len(due)
 
     def _entry_filled(self, link_id: str) -> None:
         link = self.links.get(link_id)
-        if link is None or link["state"] != "live" or link["stop_order_id"] or link["last_stop"] is None:
+        if link is None or link["state"] not in ("live", "entering") or link["stop_order_id"] or link["last_stop"] is None:
             return
         qty = self._held_qty(link)
         if qty <= 0:

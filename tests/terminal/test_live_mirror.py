@@ -1,12 +1,12 @@
 """A rule's paper position mirrored with live orders: entry, protective stop, trailing, 2-level exit, close, cut-off."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from tests.terminal.helpers import ist
 from tests.terminal.test_orders import QUOTE, Broker
 from trading_service.terminal.live_mirror import LiveMirror, past_cutoff
-from trading_service.terminal.orders import OrderService
+from trading_service.terminal.orders import OrderRefused, OrderService
 from trading_service.terminal.rules import RuleRepo, Signal, SignalRepo, rule_from_payload
 
 SYM = "NSE:SBIN-EQ"
@@ -14,13 +14,16 @@ NOW = ist(2026, 10, 22, 10, 0)
 
 
 class Mirror:
-    def __init__(self, db, execution={"account": "flattrade", "product": "I"}, live=True):
+    def __init__(self, db, execution={"account": "flattrade", "product": "I"}, live=True, approval=False):
         self.db, self.broker, self.slack = db, Broker(), []
         self.orders = OrderService(db, accounts=lambda: {"flattrade": self.broker}, quote=lambda s: QUOTE[s], notify=lambda t, channel="orders": self.slack.append(t))
-        self.orders.settings.set("flattrade", live_enabled=live)
+        self.orders.settings.set("flattrade", live_enabled=live, require_approval=approval)
         self.broker.modify = self._modify
         self.modified = []
-        self.mirror = LiveMirror(db, self.orders, notify=self.slack.append, clock=lambda: NOW, background=False)
+        self.events = []
+        self.now = NOW
+        self.mirror = LiveMirror(db, self.orders, notify=self.slack.append, clock=lambda: self.now, background=False,
+                                 broadcast=self.events.append)
         self.rule = RuleRepo(db).save(rule_from_payload({
             "symbol": SYM, "timeframe": "15m", "side": "BUY", "quantity": 4, "name": "test rule",
             "condition": {"type": "compare", "op": ">", "a": {"kind": "close"}, "b": {"kind": "value", "value": 1}},
@@ -134,3 +137,55 @@ def test_messages_say_what_happened_and_go_to_the_right_channel(db):
     assert any("🔁 *Trailing stop moved*" in t and "₹955.00 → ₹960.00" in t for t in by["updates"])
     assert any(t.startswith("🟢 *BOUGHT* · 4 NSE:SBIN-EQ @ ₹967.00") for t in by["orders"])
     assert any(t.startswith("🛑 *Stop-loss hit*") and "P&L on this exit: −₹30.00" in t for t in by["orders"])
+
+
+
+# ------------------------------------------------------------------ approvals
+def _paper_position(db, m):
+    """The paper position must exist (approval checks it is still open)."""
+    db.execute("""INSERT INTO terminal_paper_positions (id, signal_id, symbol, side, quantity, entry_price, stop, target, status, opened_at)
+                  VALUES ('pos1', :sig, :sym, 'BUY', 4, 967, 955, NULL, 'open', now())""", sig=m.p["signal_id"], sym=SYM)
+
+
+def test_with_approval_required_nothing_is_sent_until_a_person_approves(db):
+    m = Mirror(db, approval=True)
+    _paper_position(db, m)
+    m.event()
+    assert m.broker.sent == [] and m.mirror.links.get("pos1")["state"] == "awaiting_approval"
+    (a,) = m.mirror.approvals(pending_only=True)
+    assert (a["side"], a["quantity"], a["symbol"], a["stop"], a["rule_name"]) == ("BUY", 4, SYM, 955.0, "test rule")
+    assert any("Approval needed" in t for t in m.slack) and m.events[-1]["type"] == "approval"
+    assert m.mirror.decide(a["id"], True)["status"] == "approved"
+    assert m.broker.sent[0]["side"] == "BUY" and m.mirror.links.get("pos1")["state"] == "live"
+    m.held_by_broker(4); m.fill(1)
+    assert m.broker.sent[1]["trigger_price"] == 955.0                      # the stop follows by itself
+
+
+def test_a_rejected_approval_sends_nothing(db):
+    m = Mirror(db, approval=True)
+    _paper_position(db, m)
+    m.event()
+    (a,) = m.mirror.approvals(pending_only=True)
+    assert m.mirror.decide(a["id"], False)["status"] == "rejected" and m.broker.sent == []
+    with pytest.raises(OrderRefused, match="already rejected"):
+        m.mirror.decide(a["id"], True)
+
+
+def test_an_approval_expires_after_its_window(db):
+    m = Mirror(db, approval=True)
+    _paper_position(db, m)
+    m.event()
+    m.now = NOW + timedelta(minutes=6)
+    assert m.mirror.expire_due() == 1
+    assert m.mirror.links.get("pos1")["state"] == "expired" and m.broker.sent == [] and any("Approval expired" in t for t in m.slack)
+
+
+def test_a_position_that_closes_before_approval_cannot_be_entered(db):
+    m = Mirror(db, approval=True)
+    _paper_position(db, m)
+    m.event()
+    (a,) = m.mirror.approvals(pending_only=True)
+    db.execute("UPDATE terminal_paper_positions SET status = 'closed' WHERE id = 'pos1'")
+    with pytest.raises(OrderRefused, match="already closed"):
+        m.mirror.decide(a["id"], True)
+    assert m.broker.sent == []

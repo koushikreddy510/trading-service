@@ -183,6 +183,23 @@ async def cancel_order(request: Request, order_id: str):
     return await asyncio.to_thread(order_call, terminal_of(request).orders.cancel, order_id)
 
 
+@router.get("/approvals")
+def list_approvals(request: Request, pending: bool = False):
+    """Live rule entries waiting for (or decided by) a person."""
+    return {"approvals": terminal_of(request).mirror.approvals(pending_only=pending)}
+
+
+@router.post("/approvals/{approval_id}/{decision}")
+async def decide_approval(request: Request, approval_id: str, decision: str):
+    """approve: send the live entry now (all order checks apply) · reject: no order."""
+    if decision not in ("approve", "reject"):
+        raise HTTPException(404, "decision must be approve or reject")
+    t = terminal_of(request)
+    row = await asyncio.to_thread(order_call, t.mirror.decide, approval_id, decision == "approve")
+    await t.refresh_background_subscriptions()
+    return row
+
+
 @router.get("/live-settings")
 def live_settings(request: Request):
     s = terminal_of(request).orders.settings
@@ -197,7 +214,8 @@ def set_live_settings(request: Request, account: str, body: dict = Body(...)):
         raise HTTPException(404, "unknown account")
     try:
         return terminal_of(request).orders.settings.set(account, live_enabled=body.get("live_enabled"),
-                                                        max_order_value=body.get("max_order_value"), max_orders_per_day=body.get("max_orders_per_day"))
+                                                        max_order_value=body.get("max_order_value"), max_orders_per_day=body.get("max_orders_per_day"),
+                                                        require_approval=body.get("require_approval"), approval_minutes=body.get("approval_minutes"))
     except OrderRefused as e:
         raise bad_request(e) from None
 
