@@ -160,6 +160,13 @@ class OrderRepo:
         return int(self.db.scalar(sql, **params) or 0)
 
 
+PRODUCT_NAME = {"I": "Intraday", "F": "MTF", "M": "NRML", "C": "Delivery"}
+
+
+def _rs(v: Optional[float]) -> str:
+    return "-" if v is None else f"₹{v:,.2f}"
+
+
 def _json(o: dict) -> dict:
     out = dict(o)
     for k in ("created_at", "updated_at"):
@@ -175,7 +182,7 @@ class OrderService:
         point_value, circuits). Data always comes from the data broker, whichever account the order goes to."""
         self.db, self.accounts, self.quote = db, accounts, quote
         self.repo, self.settings = OrderRepo(db), LiveSettings(db)
-        self.notify = notify or (lambda text: None)
+        self.notify = notify or (lambda text, channel="orders": None)   # channel: orders (fills, alerts) | updates (the steps)
         self.broadcast = broadcast or (lambda event: None)
         self.on_change: list[Callable[[dict], None]] = []     # told about every order whose status/fill changed (live_mirror)
 
@@ -273,13 +280,13 @@ class OrderService:
             broker_id = self._broker(account).place({**o, "tag": f"atlas:{o['id']}"})
         except Exception as e:  # noqa: BLE001 - whatever the broker says, record it
             self.repo.update(o["id"], status="failed", message=str(e)[:500])
-            self.notify(f"❌ *Order failed* {account} · {side} {quantity} {symbol} @ {o['price']}: {e}")
+            self.notify(f"❌ *Order failed* · {self._what(o)}\n{e}", channel="orders")
             raise
         self.repo.update(o["id"], status="open", broker_order_id=broker_id)
         row = _json(self.repo.get(o["id"]))  # type: ignore[arg-type]
         self.broadcast({"type": "order", "order": row})
-        stop = f" stop {o['trigger_price']}" if o.get("trigger_price") else ""
-        self.notify(f"📤 *Order sent* {account} · {side} {quantity} {symbol}{stop} @ {o['price']} ({o['product']}) · #{broker_id}")
+        head = "🛡 *Stop-loss placed*" if o.get("trigger_price") else "📤 *Order sent*"
+        self.notify(f"{head} · {self._what(o)} · #{broker_id}", channel="updates")
         return row
 
     def modify_stop(self, order_id: str, trigger_price: float, price: Optional[float] = None, quantity: Optional[int] = None) -> dict:
@@ -296,7 +303,11 @@ class OrderService:
         self.repo.update(order_id, trigger_price=new["trigger_price"], price=new["price"], quantity=qty, units=new["units"])
         row = _json(self.repo.get(order_id))  # type: ignore[arg-type]
         self.broadcast({"type": "order", "order": row})
-        self.notify(f"↗️ *Stop moved* {o['account']} · {o['side']} {o['quantity']} {o['symbol']} stop {o['trigger_price']} → {new['trigger_price']}")
+        step = abs(new["trigger_price"] - o["trigger_price"])
+        kind = "Stop resized" if qty != o["quantity"] and not step else "Trailing stop moved"
+        self.notify(f"🔁 *{kind}* · {o['side'].lower()}-stop {qty} {o['symbol']} · trigger {_rs(o['trigger_price'])} → {_rs(new['trigger_price'])}"
+                    + (f" ({_rs(step)} tighter)" if step else "") + f" · {PRODUCT_NAME.get(o['product'], o['product'])} · from {self._source(o)}",
+                    channel="updates")
         return row
 
     def cancel(self, order_id: str) -> dict:
@@ -337,10 +348,60 @@ class OrderService:
                         except Exception:  # noqa: BLE001 - a listener must never break tracking
                             log.exception("order listener failed")
                     if b["status"] in ("complete", "rejected", "cancelled"):
-                        icon = {"complete": "✅", "rejected": "⛔", "cancelled": "⚪"}[b["status"]]
-                        extra = f" @ {b['avg_price']}" if b["status"] == "complete" else (f": {b['message']}" if b["message"] else "")
-                        self.notify(f"{icon} *Order {b['status']}* {account} · {o['side']} {o['quantity']} {o['symbol']}{extra}")
+                        self._announce(row)
         return changed
+
+    # --------------------------------------------------------------- messages
+    def _source(self, o: dict) -> str:
+        src = o.get("source") or "ticket"
+        if src.startswith("rule:"):
+            name = self.db.scalar("SELECT name FROM terminal_rules WHERE id = :i", i=src[5:]) or src[5:]
+            return f"rule “{name}”" + (f" ({o['purpose']})" if o.get("purpose") else "")
+        return "order ticket"
+
+    def _what(self, o: dict) -> str:
+        """SELL 2 MCX:GOLDPETAL30OCT26 · Market (limit ₹14,520.00) · Intraday · from rule “…”"""
+        if o.get("trigger_price"):
+            kind = f"Stop-loss, trigger {_rs(o['trigger_price'])} (limit {_rs(o['price'])})"
+        elif (o.get("price_type") or o.get("order_type")) == "MKT":
+            kind = f"Market (limit {_rs(o['price'])})"
+        else:
+            kind = f"Limit {_rs(o['price'])}"
+        return f"{o['side']} {o['quantity']} {o['symbol']} · {kind} · {PRODUCT_NAME.get(o['product'], o['product'])} · from {self._source(o)}"
+
+    def _announce(self, o: dict) -> None:
+        """A finished order: fills and refusals to #orders, cancellations to #updates."""
+        if o["status"] == "cancelled":
+            self.notify(f"⚪ *Cancelled* · {self._what(o)}", channel="updates")
+            return
+        if o["status"] == "rejected":
+            self.notify(f"⛔ *Rejected by the broker* · {self._what(o)}\n{o.get('message') or ''}", channel="orders")
+            return
+        verb = "BOUGHT" if o["side"] == "BUY" else "SOLD"
+        head = "🛑 *Stop-loss hit*" if o.get("trigger_price") else ("🟢" if o["side"] == "BUY" else "🔴") + f" *{verb}*"
+        text = f"{head} · {o['quantity']} {o['symbol']} @ {_rs(o.get('avg_price'))} · {PRODUCT_NAME.get(o['product'], o['product'])} · from {self._source(o)}"
+        pnl = self._exit_pnl(o)
+        if pnl is not None:
+            text += f"\n{'✅' if pnl >= 0 else '🔻'} P&L on this exit: {'+' if pnl >= 0 else '−'}{_rs(abs(pnl))}"
+        self.notify(text, channel="orders")
+
+    def _exit_pnl(self, o: dict) -> Optional[float]:
+        """For an exit of a mirrored position: (exit - entry) x quantity x direction x point value."""
+        if not o.get("link") or o.get("purpose") not in ("exit", "stop") or not o.get("avg_price"):
+            return None
+        entry = next((r for r in self.repo.for_link(o["link"]) if r["purpose"] == "entry" and r["avg_price"]), None)
+        if entry is None:
+            return None
+        direction = 1 if entry["side"] == "BUY" else -1
+        if exchange_of(o["symbol"]) in EQUITY:
+            size, pv = o["filled_units"], 1.0
+        else:                                  # derivatives: lots x the lot's point value
+            size = o["filled_units"] / max(1, entry["units"] // max(1, entry["quantity"]))
+            try:
+                pv = float(self.quote(o["symbol"]).get("point_value") or 1.0)
+            except Exception:  # noqa: BLE001
+                pv = 1.0
+        return round((o["avg_price"] - entry["avg_price"]) * direction * size * pv, 2)
 
     def today(self, days: int = 1) -> list[dict]:
         return [_json(o) for o in self.repo.today(days)]

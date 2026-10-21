@@ -88,7 +88,7 @@ class Terminal:
         self.orders = OrderService(
             db, accounts=lambda: {"flattrade": self.broker} if self.broker is not None else {},
             quote=lambda symbol: self.broker.quote(symbol),   # data always from the data broker
-            notify=lambda text: self.notifier.send(text, channel="orders"),
+            notify=lambda text, channel="orders": self.notifier.send(text, channel=channel),
             broadcast=self.hub.broadcast,
         )
         self.mirror = LiveMirror(db, self.orders, notify=lambda text: self.notifier.send(text, channel="orders"), clock=clock)

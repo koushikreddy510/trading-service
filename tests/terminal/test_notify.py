@@ -66,10 +66,10 @@ class TestTradeMessages:
         notifier.on_event({"type": "signal", "signal": {"id": "s", "status": "rejected", "side": "BUY", "symbol": SYMBOL, "timeframe": "1H", "reason": "stop is above entry"}})
         assert slack.sent == []
 
-    def test_trades_go_to_the_orders_channel(self, db, notifier, slack):
+    def test_paper_trades_go_to_the_updates_channel(self, db, notifier, slack):
         for e in Harness(db).close_bar():
             notifier.on_event(e)
-        assert slack.channels == ["orders"]
+        assert slack.channels == ["updates"]
 
     def test_a_partial_exit_is_announced_once_and_the_final_exit_after_it(self, db, notifier, slack):
         h = Harness(db)
@@ -234,3 +234,12 @@ class TestBrokerTokenCheck:
             monkeypatch.setattr(check, "_http", lambda m, u, **kw: (200, {"stat": "Ok"}))
             assert c.post("/terminal/notify/broker-tokens").json()["flattrade"]["status"] == "valid"
         assert len(slack.texts) == 1 and "Broker logins" in slack.texts[0] and "Session Expired" in slack.texts[0]
+
+
+def test_a_test_run_can_never_reach_slack(monkeypatch):
+    """Webhooks in a developer's environment (all channels) must not receive test messages."""
+    import requests
+    from trading_service import slack_notify
+    monkeypatch.setenv("SLACK_DATA_WEBHOOK_URL", "https://hooks.example/data")
+    monkeypatch.setattr(requests, "post", lambda *a, **k: (_ for _ in ()).throw(AssertionError("a test posted to Slack")))
+    assert slack_notify.send_slack("hello", channel="data") is False

@@ -43,7 +43,7 @@ class Broker:
 def setup(db):
     broker = Broker()
     sent = []
-    svc = OrderService(db, accounts=lambda: {"flattrade": broker}, quote=lambda s: QUOTE[s], notify=sent.append)
+    svc = OrderService(db, accounts=lambda: {"flattrade": broker}, quote=lambda s: QUOTE[s], notify=lambda t, channel="orders": sent.append(t))
     svc.settings.set("flattrade", live_enabled=True)
     return svc, broker, sent
 
@@ -130,7 +130,7 @@ def test_the_kill_switch_stops_everything(setup):
 def test_a_broker_refusal_is_recorded_and_reported(db):
     broker = Broker(fail="RMS: insufficient margin")
     sent = []
-    svc = OrderService(db, accounts=lambda: {"flattrade": broker}, quote=lambda s: QUOTE[s], notify=sent.append)
+    svc = OrderService(db, accounts=lambda: {"flattrade": broker}, quote=lambda s: QUOTE[s], notify=lambda t, channel="orders": sent.append(t))
     svc.settings.set("flattrade", live_enabled=True)
     with pytest.raises(RuntimeError):
         svc.place("flattrade", "NSE:SBIN-EQ", "BUY", 1, "I", "LMT", 950)
@@ -144,7 +144,7 @@ def test_tracking_follows_fills_and_cancels(setup):
     b = svc.place("flattrade", "NSE:SBIN-EQ", "BUY", 1, "I", "LMT", 940)
     broker.book["B1"].update(status="complete", filled_units=1, avg_price=950.0)
     (changed,) = svc.sync()
-    assert changed["id"] == a["id"] and changed["status"] == "complete" and any("Order complete" in t for t in sent)
+    assert changed["id"] == a["id"] and changed["status"] == "complete" and any("BOUGHT" in t for t in sent)
     assert svc.cancel(b["id"])["status"] == "cancelled" and broker.cancelled == ["B2"]
     with pytest.raises(OrderRefused, match="only an open order"):
         svc.cancel(b["id"])
@@ -196,7 +196,7 @@ def test_a_trailing_step_moves_the_same_broker_order(setup):
     broker.modify = lambda oid, order: calls.append((oid, order["trigger_price"]))
     moved = svc.modify_stop(stop["id"], 955.0)
     assert calls == [(stop["broker_order_id"], 955.0)] and moved["trigger_price"] == 955.0 and len(broker.sent) == 2
-    assert any("Stop moved" in t for t in sent)
+    assert any("Trailing stop moved" in t and "₹945.00 → ₹955.00" in t for t in sent)
 
 
 def test_live_positions_come_from_our_fills_with_average_cost_and_pnl(setup):

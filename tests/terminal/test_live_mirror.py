@@ -16,7 +16,7 @@ NOW = ist(2026, 10, 22, 10, 0)
 class Mirror:
     def __init__(self, db, execution={"account": "flattrade", "product": "I"}, live=True):
         self.db, self.broker, self.slack = db, Broker(), []
-        self.orders = OrderService(db, accounts=lambda: {"flattrade": self.broker}, quote=lambda s: QUOTE[s], notify=self.slack.append)
+        self.orders = OrderService(db, accounts=lambda: {"flattrade": self.broker}, quote=lambda s: QUOTE[s], notify=lambda t, channel="orders": self.slack.append(t))
         self.orders.settings.set("flattrade", live_enabled=live)
         self.broker.modify = self._modify
         self.modified = []
@@ -119,3 +119,18 @@ def test_intraday_positions_reach_the_cut_off(db):
     assert m.mirror.due_for_cutoff() == []
     m.mirror.clock = lambda: ist(2026, 10, 22, 15, 13)
     assert [l["position_id"] for l in m.mirror.due_for_cutoff()] == ["pos1"]
+
+
+def test_messages_say_what_happened_and_go_to_the_right_channel(db):
+    m = Mirror(db)
+    routed = []
+    m.orders.notify = lambda text, channel="orders": routed.append((channel, text))
+    m.event(); m.held_by_broker(4); m.fill(1, price=967.0)
+    m.event(stop=960.0)
+    m.fill(2, price=959.5)                       # the stop fills at the broker
+    by = {c: [t for ch, t in routed if ch == c] for c in ("orders", "updates")}
+    assert any(t.startswith("📤 *Order sent*") and "BUY 4 NSE:SBIN-EQ · Market" in t and "rule “test rule” (entry)" in t for t in by["updates"])
+    assert any("🛡 *Stop-loss placed*" in t and "trigger ₹955.00" in t for t in by["updates"])
+    assert any("🔁 *Trailing stop moved*" in t and "₹955.00 → ₹960.00" in t for t in by["updates"])
+    assert any(t.startswith("🟢 *BOUGHT* · 4 NSE:SBIN-EQ @ ₹967.00") for t in by["orders"])
+    assert any(t.startswith("🛑 *Stop-loss hit*") and "P&L on this exit: −₹30.00" in t for t in by["orders"])

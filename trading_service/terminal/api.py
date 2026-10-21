@@ -845,7 +845,9 @@ def _rule_watch(t: Terminal) -> list[dict]:
         except Exception as e:  # noqa: BLE001 - one broken rule must not hide the others
             entry, bars = {"type": "error", "label": str(e), "met": False, "distance_pct": None}, []
         session = in_session(now, ex)
+        plan = _plan(rule, ctx if bars else None)
         row = {
+            "plan": plan,
             "rule": rule.to_json(), "live": live, "session_open": session,
             "last_candle": int(bars[-1].time.timestamp()) if bars else None,
             "next_check": int(bucket_end(bucket_start(now, rule.timeframe, ex), rule.timeframe, ex).timestamp()) if session else None,
@@ -867,6 +869,55 @@ def _rule_watch(t: Terminal) -> list[dict]:
         d = r["entry"].get("distance_pct")
         return (not r["positions"], d is None, d if d is not None else 0)
     return sorted(out, key=closeness)
+
+
+def _describe_stop(spec: dict, side: str) -> str:
+    edge = "high" if side == "SELL" else "low"
+    k = spec["type"]
+    if k == "candle":
+        return f"signal candle {edge}" + (f" {'+' if side == 'SELL' else '−'} {spec.get('buffer_pct', 0):g}%" if spec.get("buffer_pct") else "")
+    if k == "pct":
+        return f"{spec['value']:g}% {'above' if side == 'SELL' else 'below'} entry"
+    if k == "atr":
+        return f"{spec['mult']:g} × ATR({spec['period']}) {'above' if side == 'SELL' else 'below'} entry"
+    if k == "fixed":
+        return f"fixed at ₹{spec['price']:,.2f}"
+    return "the drawn line"
+
+
+def _describe_trail(spec: Optional[dict], side: str, tf: str) -> Optional[str]:
+    if not spec:
+        return None
+    every = f"after each completed {spec.get('timeframe') or tf} candle"
+    edge = "high" if side == "SELL" else "low"
+    k = spec["type"]
+    what = {"candle": f"the {edge} of the last {spec.get('bars', 1)} candle(s)" + (f" ± {spec['buffer_pct']:g}%" if spec.get("buffer_pct") else ""),
+            "atr": f"{spec.get('mult', 2):g} × ATR({spec.get('period', 14)}) from the close",
+            "pct": f"{spec.get('value', 0):g}% from the close",
+            "indicator": f"the {spec.get('name', '').upper()}({','.join(f'{v:g}' for v in (spec.get('params') or {}).values())}) line",
+            "line": "the drawn line"}.get(k, k)
+    return f"{every}: move the stop to {what}; only ever tighter, never past the close"
+
+
+def _plan(rule, ctx) -> dict:
+    """What a fire on the last completed candle would do: the stop / target it would use and how the stop trails."""
+    from .conditions import InvalidRisk, compute_stop, compute_target
+
+    out = {"stop": _describe_stop(rule.stop, rule.side), "trail": _describe_trail(rule.trail, rule.side, rule.timeframe),
+           "target": (f"{rule.target['ratio']:g}R" if rule.target and rule.target["type"] == "rr" else
+                      f"{rule.target['value']:g}%" if rule.target and rule.target["type"] == "pct" else
+                      f"₹{rule.target['price']:,.2f}" if rule.target else None),
+           "entry_if_now": None, "stop_if_now": None, "target_if_now": None}
+    if ctx is None or not ctx.candles:
+        return out
+    entry = float(ctx.close[-1])
+    try:
+        stop = compute_stop(rule.stop, rule.side, entry, ctx)
+        out.update(entry_if_now=entry, stop_if_now=round(stop, 4),
+                   target_if_now=round(compute_target(rule.target, rule.side, entry, stop), 4) if rule.target else None)
+    except (InvalidRisk, Exception):  # noqa: BLE001 - a plan that cannot be computed just shows the description
+        pass
+    return out
 
 
 @router.get("/rules/watch")

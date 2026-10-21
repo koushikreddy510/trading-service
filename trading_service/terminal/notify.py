@@ -1,6 +1,6 @@
 """Slack messages for what happens in the terminal.
 
-* orders channel: every paper entry, partial exit and exit (heard from the hub: it sees every `signal` and `position`
+* updates channel: every paper entry, partial exit and exit (heard from the hub: it sees every `signal` and `position`
   event, whichever path made it: a candle close, a stop touched by a tick, a click on "Close")
 * jobs channel: a finished backtest, broker-login alerts
 * data channel: a screener -> watchlist sync (what was added / removed), and the daily data digest: stocks added to /
@@ -83,14 +83,14 @@ class Notifier:
             p = event["position"]
             if p["status"] == "closed":
                 self._partials.pop(p["id"], None)
-                self.send(self._exit_text(p))
+                self.send(self._exit_text(p), channel="updates")
             elif p.get("signal_id") in self._signals:           # the position that follows a signal is an entry; a trail move is not
-                self.send(self._entry_text(p, self._signals.pop(p["signal_id"])))
+                self.send(self._entry_text(p, self._signals.pop(p["signal_id"])), channel="updates")
             elif p.get("exit_level") == 2 and p.get("exit_price_1") is not None and p["id"] not in self._partials:
                 self._partials[p["id"]] = None                  # later events for it (trail moves) say nothing
                 while len(self._partials) > MAX_REMEMBERED_SIGNALS:
                     self._partials.popitem(last=False)
-                self.send(self._partial_text(p))
+                self.send(self._partial_text(p), channel="updates")
 
     @staticmethod
     def _entry_text(p: dict, signal: dict) -> str:

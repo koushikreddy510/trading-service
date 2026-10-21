@@ -59,7 +59,9 @@ def _free_port() -> int:
 @pytest.fixture(autouse=True)
 def no_real_slack(monkeypatch):
     """A developer's webhook in the environment must never receive messages from a test run."""
-    for name in ("SLACK_WEBHOOK_URL", "TRADING_SLACK_WEBHOOK_URL"):
+    import os
+
+    for name in [n for n in os.environ if n.startswith("SLACK_") and n.endswith("WEBHOOK_URL") or n.startswith("SLACK_WEBHOOK_URL")] + ["TRADING_SLACK_WEBHOOK_URL"]:
         monkeypatch.delenv(name, raising=False)
 
 

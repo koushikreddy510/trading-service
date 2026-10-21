@@ -5,7 +5,9 @@ import os
 import requests
 from typing import Optional
 
-CHANNEL_ENV = {"jobs": "SLACK_JOBS_WEBHOOK_URL", "data": "SLACK_DATA_WEBHOOK_URL"}  # "orders" uses the main webhook
+# "orders" uses the main webhook. "updates" = order steps (stop placed / trailed / cancelled, paper trades); until it has
+# its own channel it falls back to the main (orders) webhook like every other channel.
+CHANNEL_ENV = {"jobs": "SLACK_JOBS_WEBHOOK_URL", "data": "SLACK_DATA_WEBHOOK_URL", "updates": "SLACK_UPDATES_WEBHOOK_URL"}
 
 
 def webhook_for(account: str = "default", channel: str = "orders") -> Optional[str]:
@@ -22,6 +24,8 @@ def webhook_for(account: str = "default", channel: str = "orders") -> Optional[s
 
 
 def send_slack(text: str, webhook_url: Optional[str] = None, account: str = "default", channel: str = "orders") -> bool:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return False                 # a test run never reaches a real channel, whatever webhooks the environment holds
     url = webhook_url or webhook_for(account, channel)
     if not url:
         return False
