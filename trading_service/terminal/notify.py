@@ -106,11 +106,12 @@ class Notifier:
 
     @staticmethod
     def _exit_text(p: dict) -> str:
-        pnl = p["realized_pnl"] or 0.0
-        notional = p["quantity"] * p["entry_price"] * (p.get("multiplier") or 1.0)
+        pnl = (p["realized_pnl"] or 0.0) + (p.get("exit_pnl_1") or 0.0)          # a 2-level exit: both halves
+        qty = p["quantity"] + (p.get("exit_qty_1") or 0)
+        notional = qty * p["entry_price"] * (p.get("multiplier") or 1.0)
         pct = pnl / notional * 100 if notional else 0.0
         icon = "✅" if pnl >= 0 else "🔻"
-        return (f"{icon} *Paper EXIT* ({str(p['exit_reason']).replace('_', ' ')}) {p['side']} {p['quantity']} {short(p['symbol'])} "
+        return (f"{icon} *Paper EXIT* ({str(p['exit_reason']).replace('_', ' ')}) {p['side']} {qty} {short(p['symbol'])} "
                 f"{px(p['entry_price'])} → {px(p['exit_price'])} · P&L {pnl:+,.2f} ({pct:+.2f}%)")
 
     # --------------------------------------------------------- other messages

@@ -81,7 +81,7 @@ class TestTradeMessages:
         notifier.on_event({"type": "position", "position": half})          # e.g. a trail move afterwards: nothing new
         assert slack.texts == ["✅ *Paper PARTIAL EXIT* (exit rule 1) BUY 5 SBIN 101.00 → 104.00 · P&L +15.00 · 5 left for exit rule 2"]
         notifier.on_event({"type": "position", "position": h.book.close(p, 105.0, "exit_rule_2").to_json()})
-        assert len(slack.texts) == 2 and slack.texts[1].startswith("✅ *Paper EXIT* (exit rule 2) BUY 5 SBIN")
+        assert len(slack.texts) == 2 and slack.texts[1].startswith("✅ *Paper EXIT* (exit rule 2) BUY 10 SBIN")
 
     def test_bars_and_quotes_say_nothing(self, notifier, slack):
         notifier.on_event({"type": "bar_closed"})

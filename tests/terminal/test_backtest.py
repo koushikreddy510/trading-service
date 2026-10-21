@@ -316,3 +316,35 @@ class TestApi:
     def test_unknown_backtest_is_404(self, client):
         assert client.get("/terminal/backtests/nope").status_code == 404
         assert client.delete("/terminal/backtests/nope").status_code == 404
+
+
+class TestTwoLevelExitCash:
+    """A 2-level exit must give back all its capital and both halves' profit (the first half used to vanish)."""
+
+    def test_capital_and_both_halves_come_back(self):
+        from datetime import datetime, timezone
+        from trading_service.terminal.backtest import Portfolio
+        from trading_service.terminal.paper import PaperPosition
+
+        class Book:
+            def __init__(self):
+                self.positions = []
+
+            def open_positions(self):
+                return [p for p in self.positions if p.status == "open"]
+
+        book, pf = Book(), Portfolio(10_000, 50, None, 0)
+        p = PaperPosition(id="p1", symbol="NSE:X-EQ", side="BUY", quantity=100, entry_price=10.0, stop=9.0, target=None,
+                          status="open", opened_at=datetime(2026, 10, 1, tzinfo=timezone.utc))
+        book.positions.append(p)
+        pf.settle(book)
+        assert pf.cash == 9_000
+        p.quantity, p.exit_level, p.exit_qty_1, p.exit_price_1, p.exit_pnl_1 = 50, 2, 50, 11.0, 50.0   # level 1: half sold at 11
+        pf.settle(book)
+        assert pf.cash == pytest.approx(9_000 + 500 + 50)
+        assert pf.equity({"NSE:X-EQ": 12.0}) == pytest.approx(9_550 + 500 + 100)
+        p.status, p.exit_price, p.realized_pnl = "closed", 12.0, 100.0                                 # the rest sold at 12
+        pf.settle(book)
+        assert pf.cash == pytest.approx(10_150) and pf.open == {}
+        (closed, fee), = pf.closed
+        assert closed is p and fee == 0

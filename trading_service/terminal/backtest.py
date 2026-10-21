@@ -187,20 +187,39 @@ class Portfolio:
         self.capital, self.cash = capital, capital
         self.allocation_pct, self.max_positions, self.cost_pct = allocation_pct, max_positions, cost_pct
         self.open: dict[str, PaperPosition] = {}
-        self.closed: list[tuple[PaperPosition, float]] = []     # (position, fees paid)
+        self.closed: list[tuple[PaperPosition, float]] = []     # (position, fees paid, both exit levels)
+        self._locked: dict[str, float] = {}                     # cash each open position took on entry, less what it has given back
+        self._fees: dict[str, float] = {}                       # fees already paid by a position (its first exit level)
+        self._level_1_done: set[str] = set()
 
     def settle(self, book: PaperBook) -> None:
-        """Bring cash in line with whatever the book opened or closed since the last call."""
+        """Bring cash in line with whatever the book opened, partly closed (exit level 1) or closed since the last call."""
         live = {p.id: p for p in book.open_positions()}
         for pid, p in live.items():
             if pid not in self.open:
                 self.open[pid] = p
-                self.cash -= p.quantity * p.entry_price
+                self._locked[pid] = p.quantity * p.entry_price
+                self._fees[pid] = 0.0
+                self.cash -= self._locked[pid]
+            self._settle_level_1(pid, p)
         for pid in [i for i in self.open if i not in live]:
             p = self.open.pop(pid)
+            self._settle_level_1(pid, p)
             fee = self.cost_pct / 100 * p.quantity * (p.entry_price + (p.exit_price or p.entry_price))
-            self.cash += p.quantity * p.entry_price + (p.realized_pnl or 0.0) - fee
-            self.closed.append((p, fee))
+            self.cash += self._locked.pop(pid) + (p.realized_pnl or 0.0) - fee
+            self.closed.append((p, fee + self._fees.pop(pid)))
+            self._level_1_done.discard(pid)
+
+    def _settle_level_1(self, pid: str, p: PaperPosition) -> None:
+        """The first half of a 2-level exit: its capital and profit come back to cash once (they were lost before)."""
+        if not p.exit_qty_1 or pid not in self._locked or pid in self._level_1_done:
+            return
+        released = p.exit_qty_1 * p.entry_price
+        fee = self.cost_pct / 100 * p.exit_qty_1 * (p.entry_price + (p.exit_price_1 or p.entry_price))
+        self.cash += released + (p.exit_pnl_1 or 0.0) - fee
+        self._locked[pid] -= released
+        self._fees[pid] += fee
+        self._level_1_done.add(pid)
 
     def equity(self, marks: Mapping[str, float]) -> float:
         return self.cash + sum(p.quantity * p.entry_price + p.unrealized(marks.get(p.symbol, p.entry_price)) for p in self.open.values())
@@ -540,11 +559,14 @@ class Backtest:
         }
 
     def _trade(self, p: PaperPosition, fee: float) -> dict:
-        pnl = (p.realized_pnl or 0.0) - fee
+        """One closed trade; a 2-level exit counts both halves (exit_pnl_1 + the rest) and the full quantity."""
+        pnl = (p.realized_pnl or 0.0) + (p.exit_pnl_1 or 0.0) - fee
+        qty = p.quantity + (p.exit_qty_1 or 0)
         return {
-            "symbol": p.symbol, "side": p.side, "quantity": p.quantity, "entry_time": p.opened_at.isoformat(), "entry_price": p.entry_price,
+            "symbol": p.symbol, "side": p.side, "quantity": qty, "entry_time": p.opened_at.isoformat(), "entry_price": p.entry_price,
             "exit_time": (p.closed_at or p.opened_at).isoformat(), "exit_price": p.exit_price, "exit_reason": p.exit_reason,
-            "pnl": round(pnl, 2), "pnl_pct": round(pnl / (p.quantity * p.entry_price) * 100, 2), "initial_stop": p.initial_stop,
+            "pnl": round(pnl, 2), "pnl_pct": round(pnl / (qty * p.entry_price) * 100, 2), "initial_stop": p.initial_stop,
+            "exit_qty_1": p.exit_qty_1, "exit_price_1": p.exit_price_1,
         }
 
     def _open_row(self, p: PaperPosition) -> dict:
