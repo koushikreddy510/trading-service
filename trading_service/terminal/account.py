@@ -68,7 +68,7 @@ def parse_quote(q: dict, symbol: str) -> dict:
     }
 
 
-FLATTRADE_STATUS = {"COMPLETE": "complete", "REJECTED": "rejected", "CANCELED": "cancelled", "CANCELLED": "cancelled"}
+FLATTRADE_STATUS = {"COMPLETE": "complete", "REJECTED": "rejected", "CANCELED": "cancelled", "CANCELLED": "cancelled"}   # OPEN, TRIGGER_PENDING... = open
 
 
 def order_side(side: str) -> str:
@@ -191,17 +191,31 @@ class BrokerAccount:
     def place(self, order: dict) -> str:
         """Send one limit order; returns Flattrade's order number. `order`: symbol, side, units, product, price,
         tag (our id, kept in `remarks` so the broker's order book shows the order is ours)."""
-        out = self._post("PlaceOrder", {
+        body = {
             "actid": self.account_id, "exch": exchange_of(order["symbol"]), "tsym": self.resolver.broker_name(order["symbol"]),
             "qty": str(order["units"]), "prc": str(order["price"]), "prd": order["product"], "trantype": order_side(order["side"]),
-            "prctyp": "LMT", "ret": "DAY", "remarks": order["tag"],
-        })
+            "prctyp": "SL-LMT" if order.get("trigger_price") else "LMT", "ret": "DAY", "remarks": order["tag"],
+        }
+        if order.get("trigger_price"):
+            body["trgprc"] = str(order["trigger_price"])
+        out = self._post("PlaceOrder", body)
         if not out.get("norenordno"):
             raise BrokerError(f"PlaceOrder: {out.get('emsg') or out}")
         return str(out["norenordno"])
 
     def cancel(self, broker_order_id: str) -> None:
         self._post("CancelOrder", {"norenordno": broker_order_id})
+
+    def modify(self, broker_order_id: str, order: dict) -> None:
+        """Move an open order (a trailing stop): same order number, new price / trigger."""
+        body = {
+            "actid": self.account_id, "norenordno": broker_order_id, "exch": exchange_of(order["symbol"]),
+            "tsym": self.resolver.broker_name(order["symbol"]), "qty": str(order["units"]), "prc": str(order["price"]),
+            "prctyp": "SL-LMT" if order.get("trigger_price") else "LMT", "ret": "DAY",
+        }
+        if order.get("trigger_price"):
+            body["trgprc"] = str(order["trigger_price"])
+        self._post("ModifyOrder", body)
 
     def orders(self) -> list[dict]:
         """Today's order book, normalised: broker_order_id, status (open|complete|rejected|cancelled), filled_units,

@@ -9,7 +9,8 @@ the user manages by hand); nothing here may touch them:
 * products are our policy (stocks MTF / Intraday, derivatives NRML / Intraday; see account.POLICY);
 * live orders are off per account until switched on; a global kill switch stops everything;
 * each order is capped in value, and the number of orders per day is capped;
-* "market" orders are sent as limit orders just through the spread (Flattrade's API v2 takes limit orders only).
+* "market" orders are sent as limit orders just through the spread (Flattrade's API v2 takes limit orders only);
+* a stop-loss (SL) only closes what our own fills hold, and all our pending stops together never exceed it.
 
 Tracking: open orders are refreshed from the broker's order book every few seconds until they finish.
 """
@@ -80,10 +81,10 @@ class OrderRepo:
     def insert(self, o: dict) -> None:
         self.db.execute(
             """
-            INSERT INTO terminal_orders (id, account, symbol, side, quantity, units, product, price, status, source)
-            VALUES (:id, :account, :symbol, :side, :quantity, :units, :product, :price, 'submitting', :source)
+            INSERT INTO terminal_orders (id, account, symbol, side, quantity, units, product, price, trigger_price, status, source)
+            VALUES (:id, :account, :symbol, :side, :quantity, :units, :product, :price, :trigger_price, 'submitting', :source)
             """,
-            **{k: o[k] for k in ("id", "account", "symbol", "side", "quantity", "units", "product", "price", "source")},
+            **{k: o.get(k) for k in ("id", "account", "symbol", "side", "quantity", "units", "product", "price", "trigger_price", "source")},
         )
 
     def update(self, order_id: str, **fields: Any) -> None:
@@ -104,6 +105,12 @@ class OrderRepo:
         start = datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0)
         return int(self.db.scalar("SELECT count(*) FROM terminal_orders WHERE account = :a AND created_at >= :s AND status <> 'refused'",
                                   a=account, s=start) or 0)
+
+    def pending_stop_units(self, account: str, symbol: str, product: str, side: str, exclude: Optional[str] = None) -> int:
+        return int(self.db.scalar(
+            "SELECT coalesce(sum(units - filled_units), 0) FROM terminal_orders WHERE account = :a AND symbol = :s AND product = :p "
+            "AND side = :sd AND trigger_price IS NOT NULL AND status IN ('submitting', 'open') AND id <> :x",
+            a=account, s=symbol, p=product, sd=side, x=exclude or "") or 0)
 
     def our_net(self, account: str, symbol: str, product: str) -> int:
         """Units we hold through our own filled orders (+ long / - short). Intraday positions end with the day."""
@@ -142,15 +149,15 @@ class OrderService:
         return broker
 
     def check(self, account: str, symbol: str, side: str, quantity: int, product: str, price_type: str = "LMT",
-              price: Optional[float] = None) -> dict:
+              price: Optional[float] = None, trigger_price: Optional[float] = None, replacing: Optional[str] = None) -> dict:
         """Everything that must hold before an order is sent. Returns the order as it would be sent; raises OrderRefused."""
         side, price_type = side.upper(), price_type.upper()
         if side not in ("BUY", "SELL"):
             raise OrderRefused("side must be BUY or SELL")
         if quantity < 1:
             raise OrderRefused("quantity must be at least 1")
-        if price_type not in ("LMT", "MKT"):
-            raise OrderRefused("price type must be LMT or MKT")
+        if price_type not in ("LMT", "MKT", "SL"):
+            raise OrderRefused("price type must be LMT, MKT or SL")
         if symbol.upper().endswith("-INDEX"):
             raise OrderRefused("an index cannot be traded")
         broker = self._broker(account)
@@ -168,7 +175,19 @@ class OrderService:
 
         q = self.quote(symbol)
         tick = q.get("tick_size") or 0.05
-        if price_type == "LMT":
+        trigger = None
+        if price_type == "SL":
+            if not trigger_price or trigger_price <= 0:
+                raise OrderRefused("a stop-loss needs a trigger price")
+            trigger = round_to_tick(trigger_price, tick, up=side == "BUY")
+            ltp = q.get("ltp") or 0
+            if ltp and (trigger >= ltp if side == "SELL" else trigger <= ltp):
+                raise OrderRefused(f"a {side.lower()} stop must trigger {'below' if side == 'SELL' else 'above'} the last price {ltp}")
+            # the limit once triggered: given, or 0.5% beyond the trigger so it fills in a fast move
+            px = round_to_tick(price or trigger * (0.995 if side == "SELL" else 1.005), tick, up=side == "BUY")
+            if (px > trigger if side == "SELL" else px < trigger):
+                raise OrderRefused("a stop's limit must be at or beyond its trigger")
+        elif price_type == "LMT":
             if not price or price <= 0:
                 raise OrderRefused("a limit order needs a price")
             px = round_to_tick(price, tick, up=False)
@@ -184,19 +203,24 @@ class OrderService:
         value = px * (units if exchange in EQUITY else quantity * float(q.get("point_value") or 1))
         if value > limits["max_order_value"]:
             raise OrderRefused(f"order value ₹{value:,.0f} is above the ₹{limits['max_order_value']:,.0f} limit for {account}")
-        if self.repo.sent_today(account) >= limits["max_orders_per_day"]:
+        if replacing is None and self.repo.sent_today(account) >= limits["max_orders_per_day"]:
             raise OrderRefused(f"{limits['max_orders_per_day']} orders already sent today on {account} (the daily limit)")
+        if trigger is not None:
+            held = self.repo.our_net(account, symbol, product) * (1 if side == "SELL" else -1)
+            covered = self.repo.pending_stop_units(account, symbol, product, side, exclude=replacing)
+            if units > held - covered:
+                raise OrderRefused(f"a stop-loss only protects what we hold: {held} units held, {covered} already covered by stops")
         external = broker.net_position(symbol, product) - self.repo.our_net(account, symbol, product)
         if external:
             raise OrderRefused(f"the account already holds {external:+d} units of {symbol} as {allowed[product]['name']} that are not ours; "
                                "an order here would net into that position, so it is refused")
         return {"account": account, "symbol": symbol, "side": side, "quantity": quantity, "units": units, "product": product,
-                "price": px, "value": round(value, 2), "price_type": price_type}
+                "price": px, "trigger_price": trigger, "value": round(value, 2), "price_type": price_type}
 
     # ------------------------------------------------------------------ actions
     def place(self, account: str, symbol: str, side: str, quantity: int, product: str, price_type: str = "LMT",
-              price: Optional[float] = None, source: str = "ticket") -> dict:
-        o = self.check(account, symbol, side, quantity, product, price_type, price)
+              price: Optional[float] = None, source: str = "ticket", trigger_price: Optional[float] = None) -> dict:
+        o = self.check(account, symbol, side, quantity, product, price_type, price, trigger_price)
         o.update(id=new_id(), source=source)
         self.repo.insert(o)                       # in the ledger before it leaves, so a crash mid-send is still ours
         try:
@@ -208,7 +232,23 @@ class OrderService:
         self.repo.update(o["id"], status="open", broker_order_id=broker_id)
         row = _json(self.repo.get(o["id"]))  # type: ignore[arg-type]
         self.broadcast({"type": "order", "order": row})
-        self.notify(f"📤 *Order sent* {account} · {side} {quantity} {symbol} @ {o['price']} ({o['product']}) · #{broker_id}")
+        stop = f" stop {o['trigger_price']}" if o.get("trigger_price") else ""
+        self.notify(f"📤 *Order sent* {account} · {side} {quantity} {symbol}{stop} @ {o['price']} ({o['product']}) · #{broker_id}")
+        return row
+
+    def modify_stop(self, order_id: str, trigger_price: float, price: Optional[float] = None) -> dict:
+        """Move an open stop-loss (trail it): the same broker order, a new trigger. Same checks as a new stop."""
+        o = self.repo.get(order_id)
+        if o is None or o["trigger_price"] is None:
+            raise OrderRefused("no such stop-loss order")
+        if o["status"] not in OPEN or not o["broker_order_id"]:
+            raise OrderRefused(f"order is {o['status']}; only an open stop can be moved")
+        new = self.check(o["account"], o["symbol"], o["side"], o["quantity"], o["product"], "SL", price, trigger_price, replacing=order_id)
+        self._broker(o["account"]).modify(o["broker_order_id"], new)
+        self.repo.update(order_id, trigger_price=new["trigger_price"], price=new["price"])
+        row = _json(self.repo.get(order_id))  # type: ignore[arg-type]
+        self.broadcast({"type": "order", "order": row})
+        self.notify(f"↗️ *Stop moved* {o['account']} · {o['side']} {o['quantity']} {o['symbol']} stop {o['trigger_price']} → {new['trigger_price']}")
         return row
 
     def cancel(self, order_id: str) -> dict:

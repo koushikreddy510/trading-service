@@ -146,12 +146,24 @@ async def place_order(request: Request, body: dict = Body(...)):
     try:
         quantity = int(body.get("quantity") or 0)
         price = float(body["price"]) if body.get("price") not in (None, "") else None
+        trigger = float(body["trigger_price"]) if body.get("trigger_price") not in (None, "") else None
     except (TypeError, ValueError):
-        raise HTTPException(400, "quantity and price must be numbers") from None
+        raise HTTPException(400, "quantity and prices must be numbers") from None
     t = terminal_of(request)
     return await asyncio.to_thread(order_call, t.orders.place, str(body.get("account") or "flattrade"), symbol_param(body.get("symbol")),
                                    str(body.get("side") or ""), quantity, str(body.get("product") or ""),
-                                   str(body.get("price_type") or "LMT"), price)
+                                   str(body.get("price_type") or "LMT"), price, "ticket", trigger)
+
+
+@router.post("/orders/{order_id}/modify")
+async def modify_order(request: Request, order_id: str, body: dict = Body(...)):
+    """Move an open stop-loss: {"trigger_price": ..., "price"?: ...} (a trailing step)."""
+    try:
+        trigger = float(body["trigger_price"])
+        price = float(body["price"]) if body.get("price") not in (None, "") else None
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(400, "trigger_price (and price) must be numbers") from None
+    return await asyncio.to_thread(order_call, terminal_of(request).orders.modify_stop, order_id, trigger, price)
 
 
 @router.post("/orders/{order_id}/cancel")

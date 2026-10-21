@@ -154,3 +154,46 @@ def test_an_index_is_never_ordered(setup):
     svc, _, _ = setup
     with pytest.raises(OrderRefused, match="index"):
         svc.place("flattrade", "NSE:NIFTY50-INDEX", "BUY", 1, "I", "LMT", 100)
+
+
+def _hold(svc, broker, units, price=950.0):
+    svc.place("flattrade", "NSE:SBIN-EQ", "BUY", units, "I", "LMT", price)
+    oid = f"B{len(broker.sent)}"
+    broker.book[oid].update(status="complete", filled_units=units, avg_price=price)
+    svc.sync()
+    broker.positions[("NSE:SBIN-EQ", "I")] = broker.positions.get(("NSE:SBIN-EQ", "I"), 0) + units
+
+
+def test_a_two_step_stop_loss_covers_exactly_what_we_hold(setup):
+    svc, broker, _ = setup
+    _hold(svc, broker, 2)
+    a = svc.place("flattrade", "NSE:SBIN-EQ", "SELL", 1, "I", "SL", trigger_price=955.0)
+    b = svc.place("flattrade", "NSE:SBIN-EQ", "SELL", 1, "I", "SL", trigger_price=945.0)
+    assert (broker.sent[1]["trigger_price"], broker.sent[1]["price"]) == (955.0, round_to_tick(955 * 0.995, 0.05, up=False))
+    assert a["trigger_price"] == 955.0 and b["trigger_price"] == 945.0
+    with pytest.raises(OrderRefused, match="only protects what we hold"):
+        svc.place("flattrade", "NSE:SBIN-EQ", "SELL", 1, "I", "SL", trigger_price=940.0)
+
+
+def test_a_stop_must_trigger_on_the_right_side_of_the_price(setup):
+    svc, broker, _ = setup
+    _hold(svc, broker, 1)
+    with pytest.raises(OrderRefused, match="below the last price"):
+        svc.place("flattrade", "NSE:SBIN-EQ", "SELL", 1, "I", "SL", trigger_price=970.0)
+
+
+def test_a_stop_without_a_position_of_ours_is_refused(setup):
+    svc, broker, _ = setup
+    with pytest.raises(OrderRefused, match="only protects what we hold"):
+        svc.place("flattrade", "NSE:SBIN-EQ", "SELL", 1, "I", "SL", trigger_price=950.0)
+
+
+def test_a_trailing_step_moves_the_same_broker_order(setup):
+    svc, broker, sent = setup
+    _hold(svc, broker, 1)
+    stop = svc.place("flattrade", "NSE:SBIN-EQ", "SELL", 1, "I", "SL", trigger_price=945.0)
+    calls = []
+    broker.modify = lambda oid, order: calls.append((oid, order["trigger_price"]))
+    moved = svc.modify_stop(stop["id"], 955.0)
+    assert calls == [(stop["broker_order_id"], 955.0)] and moved["trigger_price"] == 955.0 and len(broker.sent) == 2
+    assert any("Stop moved" in t for t in sent)

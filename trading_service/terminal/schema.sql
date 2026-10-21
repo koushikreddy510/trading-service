@@ -338,3 +338,4 @@ CREATE TABLE IF NOT EXISTS terminal_live_settings (
     max_orders_per_day INTEGER NOT NULL DEFAULT 20,
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE terminal_orders ADD COLUMN IF NOT EXISTS trigger_price DOUBLE PRECISION;   -- set for a stop-loss (SL-LMT) order
