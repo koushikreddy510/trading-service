@@ -81,10 +81,11 @@ class OrderRepo:
     def insert(self, o: dict) -> None:
         self.db.execute(
             """
-            INSERT INTO terminal_orders (id, account, symbol, side, quantity, units, product, price, trigger_price, status, source)
-            VALUES (:id, :account, :symbol, :side, :quantity, :units, :product, :price, :trigger_price, 'submitting', :source)
+            INSERT INTO terminal_orders (id, account, symbol, side, quantity, units, product, price, trigger_price, status, source, link, purpose)
+            VALUES (:id, :account, :symbol, :side, :quantity, :units, :product, :price, :trigger_price, 'submitting', :source, :link, :purpose)
             """,
-            **{k: o.get(k) for k in ("id", "account", "symbol", "side", "quantity", "units", "product", "price", "trigger_price", "source")},
+            **{k: o.get(k) for k in ("id", "account", "symbol", "side", "quantity", "units", "product", "price", "trigger_price", "source",
+                                     "link", "purpose")},
         )
 
     def update(self, order_id: str, **fields: Any) -> None:
@@ -111,6 +112,14 @@ class OrderRepo:
             "SELECT coalesce(sum(units - filled_units), 0) FROM terminal_orders WHERE account = :a AND symbol = :s AND product = :p "
             "AND side = :sd AND trigger_price IS NOT NULL AND status IN ('submitting', 'open') AND id <> :x",
             a=account, s=symbol, p=product, sd=side, x=exclude or "") or 0)
+
+    def for_link(self, link: str) -> list[dict]:
+        return self.db.rows("SELECT * FROM terminal_orders WHERE link = :l ORDER BY created_at", l=link)
+
+    def link_net(self, link: str) -> int:
+        """Units a mirrored position holds through its own filled orders (+ long / - short)."""
+        return int(self.db.scalar("SELECT coalesce(sum(CASE WHEN side = 'BUY' THEN filled_units ELSE -filled_units END), 0) "
+                                  "FROM terminal_orders WHERE link = :l", l=link) or 0)
 
     def our_net(self, account: str, symbol: str, product: str) -> int:
         """Units we hold through our own filled orders (+ long / - short). Intraday positions end with the day."""
@@ -140,6 +149,7 @@ class OrderService:
         self.repo, self.settings = OrderRepo(db), LiveSettings(db)
         self.notify = notify or (lambda text: None)
         self.broadcast = broadcast or (lambda event: None)
+        self.on_change: list[Callable[[dict], None]] = []     # told about every order whose status/fill changed (live_mirror)
 
     # ------------------------------------------------------------------ checks
     def _broker(self, account: str) -> Any:
@@ -219,9 +229,10 @@ class OrderService:
 
     # ------------------------------------------------------------------ actions
     def place(self, account: str, symbol: str, side: str, quantity: int, product: str, price_type: str = "LMT",
-              price: Optional[float] = None, source: str = "ticket", trigger_price: Optional[float] = None) -> dict:
+              price: Optional[float] = None, source: str = "ticket", trigger_price: Optional[float] = None,
+              link: Optional[str] = None, purpose: Optional[str] = None) -> dict:
         o = self.check(account, symbol, side, quantity, product, price_type, price, trigger_price)
-        o.update(id=new_id(), source=source)
+        o.update(id=new_id(), source=source, link=link, purpose=purpose)
         self.repo.insert(o)                       # in the ledger before it leaves, so a crash mid-send is still ours
         try:
             broker_id = self._broker(account).place({**o, "tag": f"atlas:{o['id']}"})
@@ -236,16 +247,18 @@ class OrderService:
         self.notify(f"📤 *Order sent* {account} · {side} {quantity} {symbol}{stop} @ {o['price']} ({o['product']}) · #{broker_id}")
         return row
 
-    def modify_stop(self, order_id: str, trigger_price: float, price: Optional[float] = None) -> dict:
-        """Move an open stop-loss (trail it): the same broker order, a new trigger. Same checks as a new stop."""
+    def modify_stop(self, order_id: str, trigger_price: float, price: Optional[float] = None, quantity: Optional[int] = None) -> dict:
+        """Move an open stop-loss (trail it) or shrink it after a partial exit: the same broker order, a new trigger
+        and/or quantity. Same checks as a new stop."""
         o = self.repo.get(order_id)
         if o is None or o["trigger_price"] is None:
             raise OrderRefused("no such stop-loss order")
         if o["status"] not in OPEN or not o["broker_order_id"]:
             raise OrderRefused(f"order is {o['status']}; only an open stop can be moved")
-        new = self.check(o["account"], o["symbol"], o["side"], o["quantity"], o["product"], "SL", price, trigger_price, replacing=order_id)
+        qty = quantity or o["quantity"]
+        new = self.check(o["account"], o["symbol"], o["side"], qty, o["product"], "SL", price, trigger_price, replacing=order_id)
         self._broker(o["account"]).modify(o["broker_order_id"], new)
-        self.repo.update(order_id, trigger_price=new["trigger_price"], price=new["price"])
+        self.repo.update(order_id, trigger_price=new["trigger_price"], price=new["price"], quantity=qty, units=new["units"])
         row = _json(self.repo.get(order_id))  # type: ignore[arg-type]
         self.broadcast({"type": "order", "order": row})
         self.notify(f"↗️ *Stop moved* {o['account']} · {o['side']} {o['quantity']} {o['symbol']} stop {o['trigger_price']} → {new['trigger_price']}")
@@ -283,6 +296,11 @@ class OrderService:
                     row = _json(self.repo.get(o["id"]))  # type: ignore[arg-type]
                     changed.append(row)
                     self.broadcast({"type": "order", "order": row})
+                    for listener in self.on_change:
+                        try:
+                            listener(row)
+                        except Exception:  # noqa: BLE001 - a listener must never break tracking
+                            log.exception("order listener failed")
                     if b["status"] in ("complete", "rejected", "cancelled"):
                         icon = {"complete": "✅", "rejected": "⛔", "cancelled": "⚪"}[b["status"]]
                         extra = f" @ {b['avg_price']}" if b["status"] == "complete" else (f": {b['message']}" if b["message"] else "")

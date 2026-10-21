@@ -47,6 +47,9 @@ class Rule:
     # Last entry is the catch-all (no max_dist_pct).
     entry_score_indicator: Optional[dict] = None
     entry_levels: Optional[list] = None
+    # Live execution: None = paper only; {"account": "flattrade", "product": "I"|"F"|"M"} = mirror the paper position
+    # with real orders on that account (live_mirror.py). The account's own live switch must also be on.
+    execution: Optional[dict] = None
 
     def score_quantity(self, close: float, indicator_val: float) -> int:
         """Return the entry quantity based on distance of close from indicator_val.
@@ -74,6 +77,7 @@ class Rule:
             "trail": self.trail, "exit_condition": self.exit_condition, "exit_timeframe": self.exit_timeframe,
             "exit_condition_2": self.exit_condition_2, "exit_timeframe_2": self.exit_timeframe_2,
             "entry_score_indicator": self.entry_score_indicator, "entry_levels": self.entry_levels,
+            "execution": self.execution,
         }
 
     def exit_plan(self) -> dict:
@@ -126,6 +130,23 @@ def _validate_entry_levels(raw: Any, rule_qty: int) -> Optional[list]:
     return levels
 
 
+LIVE_ACCOUNTS = ("flattrade",)
+LIVE_PRODUCTS = ("I", "F", "M")      # Intraday, MTF (stocks), NRML (derivatives); never delivery
+
+
+def _validate_execution(raw: Any) -> Optional[dict]:
+    if not raw:
+        return None
+    if not isinstance(raw, Mapping):
+        raise InvalidRule("execution must be an object like {account, product}")
+    account, product = str(raw.get("account") or ""), str(raw.get("product") or "")
+    if account not in LIVE_ACCOUNTS:
+        raise InvalidRule(f"execution account must be one of {', '.join(LIVE_ACCOUNTS)}")
+    if product not in LIVE_PRODUCTS:
+        raise InvalidRule("execution product must be I (Intraday), F (MTF) or M (NRML)")
+    return {"account": account, "product": product}
+
+
 def rule_from_payload(raw: Mapping[str, Any], rule_id: Optional[str] = None) -> Rule:
     """Validate an API payload into a Rule (raises InvalidRule with a readable message)."""
     try:
@@ -157,6 +178,7 @@ def rule_from_payload(raw: Mapping[str, Any], rule_id: Optional[str] = None) -> 
             exit_timeframe_2=validate_timeframe(str(raw["exit_timeframe_2"])) if raw.get("exit_timeframe_2") else None,
             entry_score_indicator=_validate_entry_indicator(raw.get("entry_score_indicator")),
             entry_levels=_validate_entry_levels(raw.get("entry_levels"), qty),
+            execution=_validate_execution(raw.get("execution")),
         )
     except (ConditionError, ValueError) as e:
         raise InvalidRule(str(e)) from None
@@ -191,6 +213,7 @@ def _row_to_rule(r: dict) -> Rule:
         exit_timeframe_2=r.get("exit_timeframe_2"),
         entry_score_indicator=r.get("entry_score_indicator"),
         entry_levels=r.get("entry_levels"),
+        execution=r.get("execution"),
     )
 
 
@@ -223,12 +246,12 @@ class RuleRepo:
             INSERT INTO terminal_rules
                 (id, user_id, symbol, timeframe, name, side, condition, stop, target, quantity, enabled, once,
                  trail, exit_condition, exit_timeframe, exit_condition_2, exit_timeframe_2,
-                 entry_score_indicator, entry_levels)
+                 entry_score_indicator, entry_levels, execution)
             VALUES (:id, :u, :symbol, :tf, :name, :side, CAST(:cond AS JSONB), CAST(:stop AS JSONB),
                     CAST(:target AS JSONB), :qty, :enabled, :once,
                     CAST(:trail AS JSONB), CAST(:exit AS JSONB), :exit_tf,
                     CAST(:exit2 AS JSONB), :exit_tf2,
-                    CAST(:esi AS JSONB), CAST(:el AS JSONB))
+                    CAST(:esi AS JSONB), CAST(:el AS JSONB), CAST(:exe AS JSONB))
             ON CONFLICT (id) DO UPDATE SET
                 symbol = EXCLUDED.symbol, timeframe = EXCLUDED.timeframe, name = EXCLUDED.name,
                 side = EXCLUDED.side, condition = EXCLUDED.condition, stop = EXCLUDED.stop,
@@ -237,7 +260,7 @@ class RuleRepo:
                 exit_timeframe = EXCLUDED.exit_timeframe, exit_condition_2 = EXCLUDED.exit_condition_2,
                 exit_timeframe_2 = EXCLUDED.exit_timeframe_2,
                 entry_score_indicator = EXCLUDED.entry_score_indicator,
-                entry_levels = EXCLUDED.entry_levels, updated_at = now()
+                entry_levels = EXCLUDED.entry_levels, execution = EXCLUDED.execution, updated_at = now()
             WHERE terminal_rules.user_id = EXCLUDED.user_id
             """,
             id=rule.id, u=self.user, symbol=rule.symbol, tf=rule.timeframe, name=rule.name, side=rule.side,
@@ -250,6 +273,7 @@ class RuleRepo:
             exit_tf2=rule.exit_timeframe_2,
             esi=jdump(rule.entry_score_indicator) if rule.entry_score_indicator else None,
             el=jdump(rule.entry_levels) if rule.entry_levels else None,
+            exe=jdump(rule.execution) if rule.execution else None,
         )
         return rule
 

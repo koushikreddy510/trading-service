@@ -339,3 +339,7 @@ CREATE TABLE IF NOT EXISTS terminal_live_settings (
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE terminal_orders ADD COLUMN IF NOT EXISTS trigger_price DOUBLE PRECISION;   -- set for a stop-loss (SL-LMT) order
+ALTER TABLE terminal_rules ADD COLUMN IF NOT EXISTS execution JSONB;            -- live mirroring: {account, product}; NULL = paper only
+ALTER TABLE terminal_orders ADD COLUMN IF NOT EXISTS link TEXT;                -- the paper position a rule's live order mirrors
+ALTER TABLE terminal_orders ADD COLUMN IF NOT EXISTS purpose TEXT;             -- entry | stop | exit (rule orders)
+CREATE INDEX IF NOT EXISTS idx_terminal_orders_link ON terminal_orders (link);
