@@ -119,6 +119,74 @@ async def broker_login_all(request: Request):
     return {"results": results}
 
 
+# ------------------------------------------------------------------ live orders
+def order_call(fn, *args, **kwargs):
+    from .feed.base import BrokerError
+    from .orders import OrderRefused
+
+    try:
+        return fn(*args, **kwargs)
+    except OrderRefused as e:
+        raise HTTPException(409, str(e)) from None
+    except BrokerError as e:
+        raise HTTPException(502, str(e)) from None
+
+
+@router.get("/orders")
+def list_orders(request: Request):
+    """Today's live orders from our ledger (only orders this app sent)."""
+    return {"orders": terminal_of(request).orders.today()}
+
+
+@router.post("/orders")
+async def place_order(request: Request, body: dict = Body(...)):
+    """Send a live order after every check in orders.OrderService. Needs {"confirm": true}."""
+    if body.get("confirm") is not True:
+        raise HTTPException(400, "a live order needs confirm: true")
+    try:
+        quantity = int(body.get("quantity") or 0)
+        price = float(body["price"]) if body.get("price") not in (None, "") else None
+    except (TypeError, ValueError):
+        raise HTTPException(400, "quantity and price must be numbers") from None
+    t = terminal_of(request)
+    return await asyncio.to_thread(order_call, t.orders.place, str(body.get("account") or "flattrade"), symbol_param(body.get("symbol")),
+                                   str(body.get("side") or ""), quantity, str(body.get("product") or ""),
+                                   str(body.get("price_type") or "LMT"), price)
+
+
+@router.post("/orders/{order_id}/cancel")
+async def cancel_order(request: Request, order_id: str):
+    return await asyncio.to_thread(order_call, terminal_of(request).orders.cancel, order_id)
+
+
+@router.get("/live-settings")
+def live_settings(request: Request):
+    s = terminal_of(request).orders.settings
+    return {"kill_switch": s.killed(), "accounts": {a: s.get(a) for a in ("flattrade",)}}
+
+
+@router.put("/live-settings/{account}")
+def set_live_settings(request: Request, account: str, body: dict = Body(...)):
+    from .orders import OrderRefused
+
+    if account not in ("flattrade",):
+        raise HTTPException(404, "unknown account")
+    try:
+        return terminal_of(request).orders.settings.set(account, live_enabled=body.get("live_enabled"),
+                                                        max_order_value=body.get("max_order_value"), max_orders_per_day=body.get("max_orders_per_day"))
+    except OrderRefused as e:
+        raise bad_request(e) from None
+
+
+@router.post("/kill-switch")
+def kill_switch(request: Request, body: dict = Body(...)):
+    """{"on": true} stops all live orders at once; {"on": false} releases it."""
+    t = terminal_of(request)
+    t.orders.settings.set("*", live_enabled=not bool(body.get("on")))
+    t.notifier.send("🛑 *Kill switch ON*: no live orders" if body.get("on") else "🟢 Kill switch released", channel="orders")
+    return {"kill_switch": t.orders.settings.killed()}
+
+
 # ------------------------------------------------------------- account (read-only)
 def broker_of(request: Request):
     b = terminal_of(request).broker

@@ -68,8 +68,19 @@ def parse_quote(q: dict, symbol: str) -> dict:
     }
 
 
+FLATTRADE_STATUS = {"COMPLETE": "complete", "REJECTED": "rejected", "CANCELED": "cancelled", "CANCELLED": "cancelled"}
+
+
+def order_side(side: str) -> str:
+    return "B" if side.upper() == "BUY" else "S"
+
+
 class BrokerAccount:
-    """The Flattrade account behind the live terminal (None in demo mode)."""
+    """The Flattrade account behind the live terminal (None in demo mode). Data (quotes, candles) always comes from
+    here; orders go here only through orders.OrderService and its safety checks."""
+
+    name = "flattrade"
+    label = "Flattrade"
 
     def __init__(self, api: Any, resolver: Any, instruments: Any, account_id: str):
         self.api, self.resolver, self.instruments, self.account_id = api, resolver, instruments, account_id
@@ -174,6 +185,41 @@ class BrokerAccount:
             "broker_remarks": m.get("remarks") or "", "existing_position": self._existing(exchange, tsym, product),
             "quote": q, "preview_only": True,
         }
+
+    # ----------------------------------------------------------------- orders
+    # Called only by orders.OrderService, after its safety checks. Nothing else in the app sends orders.
+    def place(self, order: dict) -> str:
+        """Send one limit order; returns Flattrade's order number. `order`: symbol, side, units, product, price,
+        tag (our id, kept in `remarks` so the broker's order book shows the order is ours)."""
+        out = self._post("PlaceOrder", {
+            "actid": self.account_id, "exch": exchange_of(order["symbol"]), "tsym": self.resolver.broker_name(order["symbol"]),
+            "qty": str(order["units"]), "prc": str(order["price"]), "prd": order["product"], "trantype": order_side(order["side"]),
+            "prctyp": "LMT", "ret": "DAY", "remarks": order["tag"],
+        })
+        if not out.get("norenordno"):
+            raise BrokerError(f"PlaceOrder: {out.get('emsg') or out}")
+        return str(out["norenordno"])
+
+    def cancel(self, broker_order_id: str) -> None:
+        self._post("CancelOrder", {"norenordno": broker_order_id})
+
+    def orders(self) -> list[dict]:
+        """Today's order book, normalised: broker_order_id, status (open|complete|rejected|cancelled), filled_units,
+        avg_price, message, tag."""
+        try:
+            rows = self._post("OrderBook", {"actid": self.account_id})
+        except BrokerError:
+            return []                         # "no data": nothing ordered today
+        return [{
+            "broker_order_id": str(r.get("norenordno")), "status": FLATTRADE_STATUS.get(str(r.get("status", "")).upper(), "open"),
+            "filled_units": int(float(r.get("fillshares") or 0)), "avg_price": _opt(r, "avgprc"),
+            "message": r.get("rejreason") or "", "tag": r.get("remarks") or "",
+        } for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+    def net_position(self, symbol: str, product: str) -> int:
+        """The broker's net quantity (units, + long / - short) in this instrument and product, whoever made it."""
+        found = self._existing(exchange_of(symbol), self.resolver.broker_name(symbol), product)
+        return found["net_quantity"] if found else 0
 
     def _existing(self, exchange: str, tsym: str, product: str) -> Optional[dict]:
         """A position already open in this contract and product: a new order would net with it."""

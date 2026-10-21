@@ -306,3 +306,35 @@ CREATE TABLE IF NOT EXISTS terminal_broker_sessions (
     source      TEXT NOT NULL,
     obtained_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ------------------------------------------------------------------ live orders (orders.py)
+-- Every order we send, written before it is sent; our id rides in the broker's remarks ("atlas:<id>").
+CREATE TABLE IF NOT EXISTS terminal_orders (
+    id              TEXT PRIMARY KEY,
+    account         TEXT NOT NULL,
+    symbol          TEXT NOT NULL,
+    side            TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
+    quantity        INTEGER NOT NULL,             -- as entered: shares, or lots for derivatives
+    units           INTEGER NOT NULL,             -- as sent to the broker
+    product         TEXT NOT NULL,
+    price           DOUBLE PRECISION NOT NULL,
+    status          TEXT NOT NULL,                -- submitting | open | complete | rejected | cancelled | failed
+    broker_order_id TEXT,
+    filled_units    INTEGER NOT NULL DEFAULT 0,
+    avg_price       DOUBLE PRECISION,
+    message         TEXT,
+    source          TEXT NOT NULL DEFAULT 'ticket',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_terminal_orders_open ON terminal_orders (status, account);
+CREATE INDEX IF NOT EXISTS idx_terminal_orders_created ON terminal_orders (created_at DESC);
+
+-- Per account: live orders on/off (off until switched on) and limits. The row '*' is the global kill switch.
+CREATE TABLE IF NOT EXISTS terminal_live_settings (
+    account            TEXT PRIMARY KEY,
+    live_enabled       BOOLEAN NOT NULL DEFAULT false,
+    max_order_value    DOUBLE PRECISION NOT NULL DEFAULT 20000,
+    max_orders_per_day INTEGER NOT NULL DEFAULT 20,
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);

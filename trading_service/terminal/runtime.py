@@ -34,6 +34,7 @@ from .instruments import Instruments
 from .market import CandleService
 from .paper import PaperBook
 from .rules import RuleRepo, SignalRepo
+from .orders import OrderService
 from .sessions import BrokerLogins, SessionStore
 from .notify import Notifier
 from .ticks import QuoteBoard, Tick
@@ -46,6 +47,7 @@ RULES_SOURCE = "rules"          # symbols that must stay subscribed so rules kee
 POSITIONS_SOURCE = "positions"  # symbols with an open paper position (their stops need ticks)
 BACKFILL_COOLDOWN = timedelta(seconds=60)
 REPAIR_MARGIN = timedelta(minutes=2)   # re-fetch a little before the outage began: the minute it dropped in is a partial bar
+ORDER_SYNC_SECONDS = 3.0              # how often open live orders are refreshed from the broker
 REPAIR_RECHECK_SECONDS = 70.0          # ...and once more after the minute that was forming at reconnect has closed
 DEMO_WATCHLIST = ["NSE:SBIN-EQ", "NSE:TCS-EQ", "NSE:INFY-EQ", "NSE:HDFCBANK-EQ", "NSE:RELIANCE-EQ"]  # so demo mode opens with something to look at
 
@@ -81,6 +83,12 @@ class Terminal:
         self.broker = None            # account.BrokerAccount in live mode: funds, quotes, margin previews (read-only)
         self.token_listeners: dict[str, list[Callable[[dict], Awaitable[None] | None]]] = {}   # broker -> who needs a new token
         self.logins = BrokerLogins(db, apply=self.apply_tokens)
+        self.orders = OrderService(
+            db, accounts=lambda: {"flattrade": self.broker} if self.broker is not None else {},
+            quote=lambda symbol: self.broker.quote(symbol),   # data always from the data broker
+            notify=lambda text: self.notifier.send(text, channel="orders"),
+            broadcast=self.hub.broadcast,
+        )
         self._tasks: list[asyncio.Task] = []
         self._backfilled: dict[str, datetime] = {}
         self._lost_at: Optional[datetime] = None      # when the live feed was last seen going down (None = it is up, or never was)
@@ -94,6 +102,7 @@ class Terminal:
         self._tasks = [
             asyncio.create_task(self._run_feed(), name="terminal-feed"),
             asyncio.create_task(self._flush_loop(), name="terminal-flush"),
+            asyncio.create_task(self._order_loop(), name="terminal-orders"),
         ]
 
     async def apply_tokens(self, broker: str, tokens: dict) -> None:
@@ -142,6 +151,16 @@ class Terminal:
                     log.exception("gap repair failed for %s", symbol)
             if attempt == 0:
                 await asyncio.sleep(self.repair_recheck_seconds)
+
+    async def _order_loop(self) -> None:
+        """Follow open live orders until they finish (cheap when there are none: one SQL count)."""
+        while True:
+            try:
+                if self.orders.repo.open():
+                    await asyncio.to_thread(self.orders.sync)
+            except Exception:
+                log.exception("order sync failed")
+            await asyncio.sleep(ORDER_SYNC_SECONDS)
 
     async def _flush_loop(self) -> None:
         while True:
