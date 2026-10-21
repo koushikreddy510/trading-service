@@ -17,14 +17,17 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timedelta
-from typing import Any, Callable, Optional, Sequence
+from datetime import date, datetime, timedelta
+from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence
 
 from ..candles import Candle
 from ..db import Database
 from ..ticks import Tick
-from ..timeframes import IST, UTC, exchange_of
+from ..timeframes import IST, UTC, exchange_of, session_open
 from .base import BrokerError, StatusHandler, TickHandler
+
+if TYPE_CHECKING:
+    from ..instruments import Instruments
 
 log = logging.getLogger(__name__)
 
@@ -84,6 +87,17 @@ class FlattradeApi:
         body = self.call("SearchScrip", {"stext": text, "exch": exchange})
         return list(body.get("values") or []) if isinstance(body, dict) else []
 
+    def security_info(self, exchange: str, token: str) -> dict:
+        return self.call("GetSecurityInfo", {"exch": exchange, "token": token})
+
+    def eod_chart(self, symbol: str, start: datetime, end: datetime) -> list:
+        """Daily bars. `symbol` is 'MCX:SILVERMIC30NOV26' (our id is already Flattrade's form). No uid/stat envelope:
+        it answers a list of JSON strings, newest first."""
+        body = self._post("EODChartData", {"sym": symbol, "from": str(int(start.timestamp())), "to": str(int(end.timestamp()))})
+        if isinstance(body, dict):
+            raise BrokerError(f"EODChartData: {body.get('emsg') or body}")
+        return list(body or [])
+
     def tpseries(self, exchange: str, token: str, start: datetime, end: datetime, interval: str = "1") -> list[dict]:
         body = self.call(
             "TPSeries",
@@ -114,6 +128,20 @@ def parse_tpseries(rows: Sequence[dict]) -> list[Candle]:
         t = parse_candle_time(r["time"])
         out[t] = Candle(t, float(r["into"]), float(r["inth"]), float(r["intl"]), float(r["intc"]), int(float(r.get("intv") or 0)))
     return [out[t] for t in sorted(out)]
+
+
+def parse_eod(rows: Sequence[Any], exchange: str) -> list[tuple[date, Candle]]:
+    """EODChartData rows ('{"time":"20-OCT-2026", "into":..}' strings, or dicts) -> (trading day, daily bar), oldest first."""
+    out: dict[date, Candle] = {}
+    for r in rows:
+        r = json.loads(r) if isinstance(r, str) else r
+        try:
+            day = datetime.strptime(str(r["time"]).strip(), "%d-%b-%Y").date()
+            out[day] = Candle(session_open(day, exchange), float(r["into"]), float(r["inth"]), float(r["intl"]), float(r["intc"]),
+                              int(float(r.get("intv") or 0)))
+        except (KeyError, ValueError):
+            continue
+    return [(d, out[d]) for d in sorted(out)]
 
 
 # ------------------------------------------------------------- symbol -> token
@@ -153,9 +181,23 @@ class TokenResolver:
 
 
 class FlattradeHistory:
-    def __init__(self, api: FlattradeApi, resolver: TokenResolver):
+    def __init__(self, api: FlattradeApi, resolver: TokenResolver, instruments: Optional["Instruments"] = None):
         self.api = api
         self.resolver = resolver
+        self.instruments = instruments
+
+    def ensure_spec(self, symbol: str) -> None:
+        """Fill in a futures contract's price factor (`prcftr`, needed for P&L) the first time it is used."""
+        if self.instruments is None or not self.instruments.needs_price_factor(symbol):
+            return
+        exchange, token = self.resolver.resolve(symbol)
+        info = self.api.security_info(exchange, token)
+        self.instruments.set_price_factor(symbol, float(info.get("prcftr") or 1.0))
+
+    def fetch_1d(self, symbol: str, start: date, end: date) -> list[tuple[date, Candle]]:
+        a = datetime.combine(start, datetime.min.time(), tzinfo=IST)
+        b = datetime.combine(end, datetime.max.time(), tzinfo=IST)
+        return parse_eod(self.api.eod_chart(symbol, a, b), exchange_of(symbol))
 
     def fetch_1m(self, symbol: str, start: datetime, end: datetime) -> list[Candle]:
         exchange, token = self.resolver.resolve(symbol)

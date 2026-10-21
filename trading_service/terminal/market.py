@@ -4,7 +4,8 @@ Where each timeframe comes from:
 
 * 1m                     stored closed bars (`terminal_ohlcv_1m`) + the minute still forming
 * 5m ... 4H              resampled from those 1m bars on read (never stored separately)
-* 1D                     the data-store's `ohlcv_1d` (the once-a-day job), plus today's
+* 1D                     the data-store's `ohlcv_1d` (the once-a-day job) for stocks, or the broker's daily
+                         bars (`terminal_ohlcv_1d`, filled on backfill) for MCX contracts; plus today's
                          bar built from live 1m bars while the day is in progress
 * 1W                     resampled from the daily bars
 
@@ -35,6 +36,8 @@ log = logging.getLogger(__name__)
 
 MAX_LOOKBACK_DAYS = 120          # how much 1-minute history one request may scan
 DEFAULT_BACKFILL_DAYS = 30
+DAILY_BACKFILL_DAYS = 400        # broker daily bars for symbols the data-store does not cover
+BROKER_DAILY_EXCHANGES = {"MCX"}
 
 
 def _utcnow() -> datetime:
@@ -78,19 +81,43 @@ class MinuteStore:
     def latest(self, symbol: str) -> Optional[datetime]:
         return self.db.scalar("SELECT max(ts) FROM terminal_ohlcv_1m WHERE symbol = :s", s=symbol)
 
+    def save_daily(self, symbol: str, bars: list[tuple[date, Candle]]) -> None:
+        if not bars:
+            return
+        with self.db.tx() as conn:
+            from sqlalchemy import text
+
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO terminal_ohlcv_1d (symbol, date, open, high, low, close, volume)
+                    VALUES (:s, :d, :o, :h, :l, :c, :v)
+                    ON CONFLICT (symbol, date) DO UPDATE SET
+                        open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+                        close = EXCLUDED.close, volume = EXCLUDED.volume
+                    """
+                ),
+                [{"s": symbol, "d": d, "o": b.open, "h": b.high, "l": b.low, "c": b.close, "v": b.volume} for d, b in bars],
+            )
+
+    def latest_daily(self, symbol: str) -> Optional[date]:
+        return self.db.scalar("SELECT max(date) FROM terminal_ohlcv_1d WHERE symbol = :s", s=symbol)
+
 
 class DailyStore:
-    """Daily bars from the data-store's `ohlcv_1d` (written once a day by its Fyers job)."""
+    """Daily bars: the data-store's `ohlcv_1d` (written once a day by its job) for stocks, the broker's
+    (`terminal_ohlcv_1d`) for MCX contracts."""
 
     def __init__(self, db: Database):
         self.db = db
 
     def load(self, symbol: str, limit: int) -> list[Candle]:
-        if not self.db.table_exists("ohlcv_1d"):
-            return []
         exchange = exchange_of(symbol)
+        table, column = ("terminal_ohlcv_1d", "symbol") if exchange in BROKER_DAILY_EXCHANGES else ("ohlcv_1d", "tradingsymbol")
+        if not self.db.table_exists(table):
+            return []
         rows = self.db.rows(
-            "SELECT date, open, high, low, close, volume FROM ohlcv_1d WHERE tradingsymbol = :s ORDER BY date DESC LIMIT :n",
+            f"SELECT date, open, high, low, close, volume FROM {table} WHERE {column} = :s ORDER BY date DESC LIMIT :n",
             s=symbol, n=limit,
         )
         return [
@@ -113,6 +140,7 @@ class CandleService:
         self.clock = clock
         self.minutes = MinuteStore(db)
         self.daily = DailyStore(db)
+        self._daily_done: dict[str, date] = {}
 
     # ------------------------------------------------------------------ writes
     def store_minute(self, symbol: str, bar: Candle) -> None:
@@ -124,6 +152,7 @@ class CandleService:
         and now. Safe to call repeatedly. Returns the number of bars stored."""
         if self.history is None:
             return 0
+        self._broker_extras(symbol)
         now = self.clock().replace(second=0, microsecond=0)
         earliest = now - timedelta(days=min(days, MAX_LOOKBACK_DAYS))
         last = self.minutes.latest(symbol)
@@ -131,6 +160,25 @@ class CandleService:
         if start >= now:
             return 0
         return self._fetch_and_store(symbol, start, now)
+
+    def _broker_extras(self, symbol: str) -> None:
+        """What only the broker can give for a futures contract: its price factor (for P&L) and its daily bars
+        (the data-store has none). Daily bars are fetched up to yesterday; today is built from live minutes."""
+        if exchange_of(symbol) not in BROKER_DAILY_EXCHANGES:
+            return
+        try:
+            if hasattr(self.history, "ensure_spec"):
+                self.history.ensure_spec(symbol)  # type: ignore[union-attr]
+            today = self.clock().astimezone(IST).date()
+            if hasattr(self.history, "fetch_1d") and self._daily_done.get(symbol) != today:
+                self._daily_done[symbol] = today          # once a day is enough (weekends would otherwise ask every time)
+                last = self.minutes.latest_daily(symbol)
+                start = last + timedelta(days=1) if last else today - timedelta(days=DAILY_BACKFILL_DAYS)
+                if start < today:
+                    bars = self.history.fetch_1d(symbol, start, today)  # type: ignore[union-attr]
+                    self.minutes.save_daily(symbol, [(d, b) for d, b in bars if start <= d < today])
+        except BrokerError as e:
+            log.warning("daily backfill %s failed: %s", symbol, e)
 
     def repair(self, symbol: str, since: datetime) -> int:
         """Re-fetch closed 1-minute bars from `since` to now and OVERWRITE what is stored.

@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 from .db import Database, jdump, new_id
 from .rules import Signal
@@ -46,10 +46,11 @@ class PaperPosition:
     exit_qty_1: Optional[int] = None          # quantity closed at exit level 1
     exit_price_1: Optional[float] = None      # price at which first half exited
     exit_pnl_1: Optional[float] = None        # realised P&L on the first half
+    multiplier: float = 1.0        # rupees per 1.00 move per unit of quantity: 1 for shares, the point value of a futures lot
 
     def unrealized(self, price: float) -> float:
         direction = 1 if self.side == "BUY" else -1
-        return (price - self.entry_price) * direction * self.quantity
+        return (price - self.entry_price) * direction * self.quantity * self.multiplier
 
     def to_json(self, mark: Optional[float] = None) -> dict:
         out = {
@@ -62,6 +63,7 @@ class PaperPosition:
             "exit_timeframe": self.exit_timeframe, "exit_condition_2": self.exit_condition_2,
             "exit_timeframe_2": self.exit_timeframe_2, "exit_level": self.exit_level,
             "exit_qty_1": self.exit_qty_1, "exit_price_1": self.exit_price_1, "exit_pnl_1": self.exit_pnl_1,
+            "multiplier": self.multiplier,
         }
         if self.status == "open" and mark is not None:
             out["last_price"] = mark
@@ -78,15 +80,17 @@ def _from_row(r: dict) -> PaperPosition:
         trail=r["trail"], exit_condition=r["exit_condition"], exit_timeframe=r["exit_timeframe"],
         exit_condition_2=r.get("exit_condition_2"), exit_timeframe_2=r.get("exit_timeframe_2"),
         exit_level=r.get("exit_level") or 1, exit_qty_1=r.get("exit_qty_1"),
-        exit_price_1=r.get("exit_price_1"), exit_pnl_1=r.get("exit_pnl_1"),
+        exit_price_1=r.get("exit_price_1"), exit_pnl_1=r.get("exit_pnl_1"), multiplier=r.get("multiplier") or 1.0,
     )
 
 
 class PaperBook:
     """Open paper positions, kept in memory for the tick path and persisted on every change."""
 
-    def __init__(self, db: Database):
+    def __init__(self, db: Database, point_value: Optional[Callable[[str], float]] = None):
+        """`point_value(symbol)`: rupees per 1.00 move per unit of quantity (instruments.Instruments.point_value)."""
         self.db = db
+        self.point_value = point_value or (lambda symbol: 1.0)
         self._lock = threading.Lock()
         self._open: dict[str, list[PaperPosition]] = {}
         self.reload()
@@ -111,22 +115,23 @@ class PaperBook:
             opened_at=now or datetime.now(timezone.utc), initial_stop=signal.stop, trail=trail,
             exit_condition=exit_condition, exit_timeframe=exit_timeframe if exit_condition else None,
             exit_condition_2=exit_condition_2, exit_timeframe_2=exit_timeframe_2 if exit_condition_2 else None,
-            exit_level=1,
+            exit_level=1, multiplier=self.point_value(signal.symbol),
         )
         self.db.execute(
             """
             INSERT INTO terminal_paper_positions
                 (id, signal_id, symbol, side, quantity, entry_price, stop, target, status, opened_at,
-                 initial_stop, trail, exit_condition, exit_timeframe, exit_condition_2, exit_timeframe_2)
+                 initial_stop, trail, exit_condition, exit_timeframe, exit_condition_2, exit_timeframe_2, multiplier)
             VALUES (:id, :sig, :symbol, :side, :qty, :entry, :stop, :target, 'open', :opened,
                     :initial, CAST(:trail AS JSONB), CAST(:exit AS JSONB), :exit_tf,
-                    CAST(:exit2 AS JSONB), :exit_tf2)
+                    CAST(:exit2 AS JSONB), :exit_tf2, :mult)
             """,
             id=position.id, sig=position.signal_id, symbol=position.symbol, side=position.side, qty=quantity,
             entry=position.entry_price, stop=position.stop, target=position.target, opened=position.opened_at,
             initial=position.initial_stop, trail=jdump(trail) if trail else None,
             exit=jdump(exit_condition) if exit_condition else None, exit_tf=position.exit_timeframe,
             exit2=jdump(exit_condition_2) if exit_condition_2 else None, exit_tf2=position.exit_timeframe_2,
+            mult=position.multiplier,
         )
         with self._lock:
             self._open.setdefault(position.symbol, []).append(position)
@@ -185,7 +190,7 @@ class PaperBook:
         qty_1 = p.quantity // 2
         remaining = p.quantity - qty_1
         direction = 1 if p.side == "BUY" else -1
-        pnl_1 = (price - p.entry_price) * direction * qty_1
+        pnl_1 = (price - p.entry_price) * direction * qty_1 * p.multiplier
         self.db.execute(
             """
             UPDATE terminal_paper_positions SET

@@ -72,6 +72,15 @@ jobs:
     url: /admin/fyers-token/generate
     method: POST
 
+  - id: mcx_instruments_refresh
+    name: MCX futures list (Flattrade scrip master)
+    type: http
+    service: trading
+    schedule: "30 8 * * 1-5"
+    url: /terminal/instruments/refresh
+    method: POST
+    slack: failures   # new contracts appear and expired ones go every day; only a failure is worth a message
+
   - id: broker_tokens_check
     name: Broker token check (Slack if a login is needed)
     type: http

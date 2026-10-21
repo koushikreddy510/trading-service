@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
 UTC = timezone.utc
+NEW_YORK = ZoneInfo("America/New_York")
 
 
 @dataclass(frozen=True)
@@ -33,8 +34,9 @@ SESSIONS: dict[str, Session] = {
     "BSE": _EQUITY,
     "NFO": _EQUITY,
     "BFO": _EQUITY,
-    "MCX": Session(time(9, 0), time(23, 30)),
+    "MCX": Session(time(9, 0), time(23, 30)),   # metals / energy; 23:55 while the US is on standard time (below)
 }
+MCX_WINTER_CLOSE = time(23, 55)
 
 INTRADAY_MINUTES: dict[str, int] = {
     "1m": 1,
@@ -87,6 +89,8 @@ def session_open(day: date, exchange: str = "NSE") -> datetime:
 
 
 def session_close(day: date, exchange: str = "NSE") -> datetime:
+    if exchange.upper() == "MCX" and not datetime.combine(day, time(12), tzinfo=NEW_YORK).dst():
+        return _at(day, MCX_WINTER_CLOSE)       # MCX follows the US clock change: Nov to Mar it trades till 23:55
     return _at(day, session_of(exchange).close)
 
 

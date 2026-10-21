@@ -2,7 +2,7 @@
 
 REST (JSON)                                                   websocket  /terminal/ws
   GET    /status                                                client -> {"type":"subscribe","symbols":[...]}
-  GET    /symbols/search?q=                                                 {"type":"unsubscribe","symbols":[...]}
+  GET    /symbols/search?q=  (stocks + MCX futures)                         {"type":"unsubscribe","symbols":[...]}
   GET    /candles?symbol=&timeframe=&limit=                                 {"type":"ping"}
   GET    /indicators                                            server -> {"type":"hello"|"tick"|"bar_closed"|
   GET/POST /watchlists   PATCH/DELETE /watchlists/{id}                       "signal"|"position"|"status"|"error"}
@@ -14,6 +14,7 @@ REST (JSON)                                                   websocket  /termin
   GET    /financials?symbol=      GET /results/recent
   GET    /sectors                 GET /sectors/compare?group=|sector=
   POST   /notify/data-digest   (Slack digest of data freshness and symbol-list changes)
+  POST   /instruments/refresh  (reloads the MCX futures list from Flattrade's scrip master; a daily job calls this)
   POST   /notify/broker-tokens (checks each broker's token; Slack says which logins are needed; a scheduled job calls this)
   GET    /data/status          (how complete and fresh the data is, symbol changes, the scrape jobs)
   POST   /data/run             {job, mode?, days?, limit?} starts a scrape job in the strategy-screener
@@ -32,7 +33,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Body, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
-from . import datajobs, financials as fin
+from . import datajobs, financials as fin, instruments
 from . import screener, screener_sync as sync, sectors, symbols as symbol_search
 from .backtest import BacktestError
 from .backtest_jobs import BacktestStore
@@ -81,6 +82,15 @@ def indicator_specs():
 @router.get("/symbols/search")
 def search_symbols(request: Request, q: str = Query("", max_length=40), limit: int = Query(20, ge=1, le=50)):
     return {"results": symbol_search.search(terminal_of(request).db, q, limit)}
+
+
+@router.post("/instruments/refresh")
+async def refresh_instruments(request: Request):
+    """Reload the MCX futures list from Flattrade's scrip master (a daily job calls this)."""
+    try:
+        return await asyncio.to_thread(instruments.refresh, terminal_of(request).db)
+    except Exception as e:  # noqa: BLE001 - a download failure keeps the current list; the job reports it
+        raise HTTPException(502, f"instrument refresh failed: {e}") from None
 
 
 # --------------------------------------------------------------------- candles
@@ -461,6 +471,15 @@ def mount(app: FastAPI) -> None:
     app.include_router(router)
 
 
+def _first_instruments(db) -> None:
+    import logging
+
+    try:
+        logging.getLogger(__name__).info("MCX instruments loaded: %s", instruments.refresh(db))
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger(__name__).warning("MCX instruments not loaded: %s", e)
+
+
 @asynccontextmanager
 async def terminal_lifespan(app: FastAPI, terminal: Optional[Terminal] = None):
     """Start the terminal with the app and stop it on shutdown. If it cannot start
@@ -476,6 +495,8 @@ async def terminal_lifespan(app: FastAPI, terminal: Optional[Terminal] = None):
         BacktestStore(t.db).fail_stale()
         await t.start()
         started = t
+        if terminal is None and not t.db.scalar("SELECT EXISTS (SELECT 1 FROM terminal_instruments)"):
+            asyncio.get_running_loop().run_in_executor(None, _first_instruments, t.db)   # first start: make MCX searchable
     except Exception as e:  # noqa: BLE001
         import logging
 

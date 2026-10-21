@@ -29,6 +29,7 @@ from .drawings import DrawingRepo
 from .engine import RuleEngine
 from .feed.base import Feed, History
 from .hub import Hub, Subscriptions
+from .instruments import Instruments
 from .market import CandleService
 from .paper import PaperBook
 from .rules import RuleRepo, SignalRepo
@@ -67,7 +68,8 @@ class Terminal:
         self.candles = CandleService(db, history, None, clock)
         self.builder = CandleBuilder(self.candles.store_minute, self._rule_symbols)
         self.candles.builder = self.builder
-        self.book = PaperBook(db)
+        self.instruments = Instruments(db)
+        self.book = PaperBook(db, self.instruments.point_value)
         self.notifier = notifier or Notifier(tag=mode)
         self.hub.listeners.append(self.notifier.on_event)
         self.engine = RuleEngine(db, self.candles.candles, self.book, clock)
@@ -264,5 +266,5 @@ def build_terminal(db: Database, mode: Optional[str] = None) -> Terminal:
         api = FlattradeApi(cfg["user_id"], cfg["token"])
         resolver = TokenResolver(api, db)
         feed = FlattradeFeed(cfg["user_id"], cfg["account_id"], cfg["token"], resolver)
-        return Terminal(db, feed, FlattradeHistory(api, resolver), mode="flattrade")
+        return Terminal(db, feed, FlattradeHistory(api, resolver, Instruments(db)), mode="flattrade")
     raise ValueError(f"TERMINAL_MODE must be 'demo' or 'flattrade', got {mode!r}")

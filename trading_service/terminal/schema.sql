@@ -266,3 +266,35 @@ CREATE INDEX IF NOT EXISTS idx_terminal_backtests_user ON terminal_backtests (us
 CREATE TABLE IF NOT EXISTS terminal_symbol_snapshot (
     symbol TEXT PRIMARY KEY
 );
+
+-- ------------------------------------------------------------------ instruments
+-- Contracts the data-store's stock list does not have (MCX futures), from Flattrade's scrip master; see instruments.py.
+-- price_factor is Flattrade's `prcftr` (filled in on first use); lot_size x price_factor = rupees per 1.00 move per lot.
+CREATE TABLE IF NOT EXISTS terminal_instruments (
+    symbol       TEXT PRIMARY KEY,
+    exchange     TEXT NOT NULL,
+    token        TEXT NOT NULL,
+    tsym         TEXT NOT NULL,
+    underlying   TEXT NOT NULL,
+    instrument   TEXT NOT NULL,
+    expiry       DATE,
+    lot_size     INTEGER NOT NULL DEFAULT 1,
+    price_factor DOUBLE PRECISION,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_terminal_instruments_underlying ON terminal_instruments (underlying, expiry);
+
+-- Daily bars from the broker for symbols the data-store's ohlcv_1d does not cover (MCX contracts).
+CREATE TABLE IF NOT EXISTS terminal_ohlcv_1d (
+    symbol  TEXT NOT NULL,
+    date    DATE NOT NULL,
+    open    DOUBLE PRECISION NOT NULL,
+    high    DOUBLE PRECISION NOT NULL,
+    low     DOUBLE PRECISION NOT NULL,
+    close   DOUBLE PRECISION NOT NULL,
+    volume  BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (symbol, date)
+);
+
+-- Rupees per 1.00 price move per unit of quantity: 1 for stocks, lot size x price factor for a futures lot.
+ALTER TABLE terminal_paper_positions ADD COLUMN IF NOT EXISTS multiplier DOUBLE PRECISION NOT NULL DEFAULT 1;
