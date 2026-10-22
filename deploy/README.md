@@ -43,7 +43,9 @@ Keep it running all day: the scheduler fires jobs overnight (screener.in at 02:0
 Flattrade API v2 only accepts orders from one **static IP that you enter when you create the API key** (changeable once a week).
 So the order is: VM and fixed IP first, API key second.
 
-1. **Instance:** Compute → Create instance → shape **VM.Standard.A1.Flex** (Always Free: up to 4 OCPU / 24 GB; pick 2 OCPU / 12 GB), image **Ubuntu 24.04 (aarch64)**, 50 GB boot volume, public subnet, add your SSH key.
+To move the running system there, follow `RUNBOOK.md` (backup → `deploy.sh setup` in standby → cutover).
+
+1. **Instance:** Compute → Create instance → shape **VM.Standard.A1.Flex** (Always Free: 2 OCPU / 12 GB in total), image **Ubuntu 24.04 (aarch64)**, 50 GB boot volume, public subnet, add your SSH key.
    "Out of host capacity" is common: retry later, try another availability domain, or upgrade the account to Pay-As-You-Go (you are still not charged inside the free limits).
    Pick the home region carefully (Mumbai `ap-mumbai-1` or Hyderabad); it cannot be changed later.
 2. **Fixed IP:** Networking → IP management → **Reserved public IP** → attach it to the instance's VNIC. Ephemeral IPs change if the instance is recreated.
@@ -51,11 +53,10 @@ So the order is: VM and fixed IP first, API key second.
    `sudo iptables -I INPUT 5 -p tcp -m multiport --dports 80,443 -j ACCEPT && sudo netfilter-persistent save`.
 4. **Check the address the broker will see:** on the VM `curl -s ifconfig.me` must print the reserved IP. Enter that as the **primary static IP** when you create the Flattrade API key (redirect URL `http://127.0.0.1:5000/`).
 5. Deploy as in *First deployment* below. All images used (postgres, python, node, caddy) have arm64 builds, so nothing changes.
-6. Oracle may reclaim an Always Free instance whose CPU stays under ~20% for a week; Postgres plus the scheduler usually stay above that, but watch for the email.
+6. Oracle may reclaim an idle Always Free instance: over 7 days CPU 95th percentile < 20%, network < 20% and (A1) memory < 20%. Pay-As-You-Go accounts are exempt.
 
-**Every morning** (token expires about 05:30 IST): open `https://auth.flattrade.in/?app_key=<key>` on your laptop, log in, copy the address the browser ends on
-(`http://127.0.0.1:5000/?code=...` - the page will not load, that is fine), then on the VM: `deploy.sh flattrade-login 'http://127.0.0.1:5000/?code=...'`.
-At 08:15 IST the check job posts to Slack if the token is missing or rejected.
+**Flattrade login** is automatic: the 07:45 IST `broker_auto_login` job logs in with `FLATTRADE_PASSWORD` + `FLATTRADE_TOTP_KEY`.
+If it fails, Slack `#trading-jobs` says so; log in by hand with `deploy.sh flattrade-login '<redirect url>'` or from Data → Broker logins.
 
 ## First deployment
 
@@ -99,8 +100,8 @@ that repo's containers; "Run workflow" with `all` redeploys everything. Concurre
 ## Things to know
 
 - **Login:** the Workspace has no user accounts yet and its Data screen can start scrapes, so Caddy puts one shared password in front of everything.
-- **Live prices** need `TERMINAL_MODE=flattrade` plus `FLATTRADE_USER_ID` and `FLATTRADE_TOKEN`. That token and the Fyers token expire daily and nothing refreshes them on the VM yet; until then the terminal runs on synthetic prices (the page says DEMO DATA) and daily candles need the Fyers token file updated each day.
+- **Live prices** need `TERMINAL_MODE=flattrade`; the morning auto-login keeps the Flattrade token fresh (stored in the database, not `.env`). Daily candles come from yfinance and need no token.
 - **Scraping from a cloud IP:** screener.in and NSE sometimes throttle datacenter addresses. Watch the first runs on the Data screen.
-- **Backups:** Postgres data lives in the `postgres_data` Docker volume. Take a daily `pg_dump` or EBS snapshot once the data matters.
+- **Backups:** `deploy.sh backup` writes the database, `.env`, job history and Fyers token to one file (see `RUNBOOK.md`).
 - **Unpinned dependencies:** `requirements.txt` files are unpinned. The compose file names `postgresql+psycopg2://` for that reason; pin versions before relying on rebuilds being identical.
 - The old systemd + nginx deployment of the strategy-screener at its current server is untouched; this kit is a separate, parallel target.

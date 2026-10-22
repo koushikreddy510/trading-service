@@ -80,6 +80,7 @@ services:
       MARKET_DATABASE_URL: *market-db
       STRATEGY_SCREENER_URL: http://strategy-screener:8000
       TERMINAL_MODE: ${TERMINAL_MODE:-demo}            # demo = synthetic prices; flattrade = real feed
+      STANDBY: ${STANDBY:-}                            # 1 = a copy brought up beside the live server: never sends orders (deploy.sh setup)
       FLATTRADE_USER_ID: ${FLATTRADE_USER_ID:-}
       FLATTRADE_ACCOUNT_ID: ${FLATTRADE_ACCOUNT_ID:-}
       FLATTRADE_TOKEN: ${FLATTRADE_TOKEN:-}            # optional: the app's own login (Data -> Broker logins) is stored in the DB and wins

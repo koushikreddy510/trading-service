@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
@@ -192,6 +193,8 @@ class OrderService:
 
     # ------------------------------------------------------------------ checks
     def _broker(self, account: str) -> Any:
+        if os.getenv("STANDBY"):   # a copy being brought up beside the live server (deploy.sh setup): it must never reach the broker
+            raise OrderRefused("this server is on standby (STANDBY=1): no live orders until it goes live")
         broker = self.accounts().get(account)
         if broker is None:
             raise OrderRefused(f"account {account!r} is not connected")

@@ -127,6 +127,14 @@ def test_the_kill_switch_stops_everything(setup):
     assert svc.settings.killed() and broker.sent == []
 
 
+def test_a_standby_server_never_reaches_the_broker(setup, monkeypatch):
+    svc, broker, _ = setup
+    monkeypatch.setenv("STANDBY", "1")
+    with pytest.raises(OrderRefused, match="standby"):
+        svc.place("flattrade", "NSE:SBIN-EQ", "BUY", 1, "I", "LMT", 950)
+    assert broker.sent == []
+
+
 def test_a_broker_refusal_is_recorded_and_reported(db):
     broker = Broker(fail="RMS: insufficient margin")
     sent = []

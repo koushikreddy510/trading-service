@@ -11,6 +11,11 @@
 #   deploy.sh flattrade-login '<url>'   daily: turn the URL Flattrade redirected your browser to into today's token and restart trading
 #   deploy.sh status | logs [service]
 #
+#   deploy.sh backup [dir]      everything not in git (database, .env, scheduler history, Fyers token) -> one .tar.gz
+#   deploy.sh setup <backup>    a fresh Ubuntu VM (x86 or ARM) -> running copy, in STANDBY (no orders, no scheduler, no Slack, demo prices)
+#   deploy.sh go-live           a standby copy becomes the live server (real .env back, scheduler on)
+#   deploy.sh restore <backup>  only the restore step of setup (database, .env, history, token)
+#
 # Environment: BRANCH (default main), GH_TOKEN (init only, to clone private repos), GH_OWNER (default koushikreddy510).
 set -euo pipefail
 
@@ -71,6 +76,71 @@ init() {
   echo "== done. Edit $DEPLOY_DIR/.env if needed (SITE_ADDRESS, Flattrade, Fyers), then: deploy.sh all"
 }
 
+backup() {  # backup [dir]
+  local out tmp file; out="${1:-$HOME}"; tmp="$(mktemp -d)"; file="$out/trading-backup-$(date +%Y%m%d-%H%M).tar.gz"
+  echo "== backup"
+  dc exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d market -Fc' > "$tmp/market.dump"
+  [ -s "$tmp/market.dump" ] || { echo "  pg_dump produced nothing"; exit 1; }
+  cp "$DEPLOY_DIR/.env" "$tmp/env"
+  # sqlite's own backup, so a job finishing mid-copy cannot leave a torn file
+  if dc exec -T scheduler python -c "import sqlite3; d=sqlite3.connect('/tmp/runs.db'); sqlite3.connect('/data/job_runs.db').backup(d); d.close()" 2>/dev/null; then
+    dc cp scheduler:/tmp/runs.db "$tmp/job_runs.db" >/dev/null
+  fi
+  if [ -s "$ROOT/data-store/fyers_access_token.txt" ]; then cp "$ROOT/data-store/fyers_access_token.txt" "$tmp/"; fi
+  (umask 077 && tar czf "$file" -C "$tmp" .); rm -rf "$tmp"
+  echo "  $file ($(du -h "$file" | cut -f1)) - holds every secret in .env: copy it with scp, never commit it"
+}
+
+restore() {  # restore <backup>: .env first, so postgres initialises with the backup's password
+  [ -f "${1:-}" ] || { echo "usage: deploy.sh restore <trading-backup-*.tar.gz>"; exit 1; }
+  local tmp; tmp="$(mktemp -d)"; tar xzf "$1" -C "$tmp"
+  echo "== restore $(basename "$1")"
+  if [ -f "$DEPLOY_DIR/.env" ] && ! cmp -s "$tmp/env" "$DEPLOY_DIR/.env"; then cp "$DEPLOY_DIR/.env" "$DEPLOY_DIR/.env.before-restore"; fi
+  install -m 600 "$tmp/env" "$DEPLOY_DIR/.env"
+  rm -f "$DEPLOY_DIR/.env.live"   # a standby's saved settings are older than the backup's: `all` now runs live
+  if [ -f "$tmp/fyers_access_token.txt" ]; then cp "$tmp/fyers_access_token.txt" "$ROOT/data-store/"; fi
+  dc up -d --wait postgres
+  # --clean replaces whatever is there; pg_restore exits non-zero on harmless notices, so count the tables instead
+  dc exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d market --clean --if-exists --no-owner' < "$tmp/market.dump" 2>/dev/null || true
+  echo "  tables: $(dc exec -T postgres sh -c "psql -U \"\$POSTGRES_USER\" -d market -Atc \"select count(*) from pg_tables where schemaname = 'public'\"")"
+  if [ -f "$tmp/job_runs.db" ]; then
+    dc build scheduler >/dev/null
+    dc run --rm --no-deps -v "$tmp:/restore:ro" --entrypoint sh scheduler -c 'cp /restore/job_runs.db /data/job_runs.db' && echo "  scheduler history restored"
+  fi
+  rm -rf "$tmp"
+}
+
+standby_env() {  # keep the real .env as .env.live; the running one may not trade, schedule, post to Slack or share the broker feed
+  cp "$DEPLOY_DIR/.env" "$DEPLOY_DIR/.env.live"; chmod 600 "$DEPLOY_DIR/.env.live"
+  sed -i -E '/^STANDBY=/d; s/^TERMINAL_MODE=.*/TERMINAL_MODE=demo/; s/^((TRADING_)?SLACK_[A-Z_]*WEBHOOK_URL[A-Z_]*)=.*/\1=/' "$DEPLOY_DIR/.env"
+  echo "STANDBY=1" >> "$DEPLOY_DIR/.env"
+}
+
+setup() {  # setup <backup>
+  [ -f "${1:-}" ] || { echo "usage: deploy.sh setup <trading-backup-*.tar.gz>"; exit 1; }
+  local backup; backup="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+  command -v docker >/dev/null || { echo "== installing docker"; curl -fsSL https://get.docker.com | sudo sh; sudo usermod -aG docker "$USER"; }
+  # a fresh docker group membership only applies to new logins: re-run inside it
+  docker info >/dev/null 2>&1 || exec sg docker -c "$(printf '%q ' "${BASH_SOURCE[0]}" setup "$backup")"
+  # the backup's .env goes in before init, so init keeps it instead of generating new passwords
+  tar xzf "$backup" -C "$DEPLOY_DIR" ./env && mv "$DEPLOY_DIR/env" "$DEPLOY_DIR/.env" && chmod 600 "$DEPLOY_DIR/.env"
+  init
+  restore "$backup"
+  [ -n "${LIVE:-}" ] || standby_env
+  for s in data-store screener trading web; do pull "$(repo_of "$s")"; done
+  dc build
+  if [ -n "${LIVE:-}" ]; then dc up -d; else dc up -d postgres data-store strategy-screener trading-service web; fi
+  migrate; sleep 10; status
+  [ -n "${LIVE:-}" ] || echo "== STANDBY: no orders, no scheduler, no Slack, demo prices. When this server should take over: deploy.sh go-live"
+}
+
+go_live() {
+  [ -f "$DEPLOY_DIR/.env.live" ] || { echo "not a standby copy (no deploy/.env.live)"; exit 1; }
+  mv "$DEPLOY_DIR/.env.live" "$DEPLOY_DIR/.env"
+  dc up -d; sleep 10; status
+  echo "== LIVE. Register this server's IP with Flattrade (orders come only from it), then stop the old server."
+}
+
 deploy() {  # deploy <web|trading|screener|data-store>
   echo "== $1"; pull "$(repo_of "$1")"
   # shellcheck disable=SC2046
@@ -84,11 +154,15 @@ case "$cmd" in
        dc up -d postgres; dc build; dc up -d; migrate; status ;;
   web|trading|screener|data-store) deploy "$cmd"; [ "$cmd" = data-store ] && migrate; status ;;
   migrate) migrate ;;
+  backup) backup "$@" ;;
+  restore) restore "$@" ;;
+  setup) setup "$@" ;;
+  go-live) go_live ;;
   flattrade-login)  # needs python3 + requests on the VM (both ship with Ubuntu server images); FLATTRADE_API_KEY/SECRET come from .env
     [ -n "${1:-}" ] || { echo "usage: deploy.sh flattrade-login '<the full URL your browser was redirected to>'"; exit 1; }
     (cd "$ROOT/trading-service" && set -a && . "$DEPLOY_DIR/.env" && set +a && python3 -m broker_auth flattrade --code "$1" --env-file "$DEPLOY_DIR/.env")
     dc up -d trading-service ;;
   status) status ;;
   logs) dc logs --tail 100 -f "$@" ;;
-  *) sed -n '2,16p' "${BASH_SOURCE[0]}"; exit 1 ;;
+  *) sed -n '2,21p' "${BASH_SOURCE[0]}"; exit 1 ;;
 esac
