@@ -102,3 +102,14 @@ def test_has_open_for_rule_looks_through_the_signal(db, signal):
     assert book.has_open_for_rule(rule.id) is True
     book.close_manually(p.id, 100.0)
     assert book.has_open_for_rule(rule.id) is False
+
+
+def test_the_stop_path_is_recorded_for_the_chart(db, signal):
+    book = PaperBook(db)
+    p = book.open_from_signal(signal(stop=98.0), quantity=10, now=ist(2026, 10, 19, 10, 30))
+    book.move_stop(p, 99.0, ist(2026, 10, 19, 11, 0))
+    book.move_stop(p, 98.5)                                 # looser: ignored, not recorded
+    book.move_stop(p, 99.5, ist(2026, 10, 19, 12, 0))
+    (line,) = book.trade_lines(SYMBOL)
+    assert [s["stop"] for s in line["stop_path"]] == [98.0, 99.0, 99.5]
+    assert line["entry_price"] == 100.0 and line["target"] == 104.0 and line["status"] == "open"

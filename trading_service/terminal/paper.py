@@ -135,7 +135,31 @@ class PaperBook:
         )
         with self._lock:
             self._open.setdefault(position.symbol, []).append(position)
+        self._record_stop(position.id, position.stop, position.opened_at)
         return position
+
+    def _record_stop(self, position_id: str, stop: Optional[float], ts: Optional[datetime]) -> None:
+        """The stop's path over time, so the chart can draw the trail as a line."""
+        if stop is not None:
+            self.db.execute("INSERT INTO terminal_stop_history (position_id, ts, stop) VALUES (:p, :t, :s)",
+                            p=position_id, t=ts or datetime.now(timezone.utc), s=stop)
+
+    def trade_lines(self, symbol: str, days: int = 7) -> list[dict]:
+        """Open and recent closed positions on a symbol with their stop path (oldest first), target and entry."""
+        rows = self.db.rows("SELECT * FROM terminal_paper_positions WHERE symbol = :s AND (status = 'open' OR closed_at > now() - make_interval(days => :d)) "
+                            "ORDER BY opened_at", s=symbol, d=days)
+        out = []
+        for r in rows:
+            path = [{"time": to_epoch(h["ts"]), "stop": h["stop"]} for h in
+                    self.db.rows("SELECT ts, stop FROM terminal_stop_history WHERE position_id = :p ORDER BY ts", p=r["id"])]
+            if not path and r["initial_stop"] is not None:          # positions from before the history existed
+                path = [{"time": to_epoch(r["opened_at"]), "stop": r["initial_stop"]}]
+                if r["stop"] is not None and r["stop"] != r["initial_stop"]:
+                    path.append({"time": to_epoch(r["closed_at"] or r["opened_at"]), "stop": r["stop"]})
+            out.append({"id": r["id"], "side": r["side"], "status": r["status"], "entry_price": r["entry_price"], "target": r["target"],
+                        "opened_at": to_epoch(r["opened_at"]), "closed_at": to_epoch(r["closed_at"]) if r["closed_at"] else None,
+                        "exit_price": r["exit_price"], "stop_path": path})
+        return out
 
     def has_open_for_rule(self, rule_id: str) -> bool:
         return bool(self.db.scalar(
@@ -211,11 +235,12 @@ class PaperBook:
             p.exit_pnl_1 = pnl_1
         return p
 
-    def move_stop(self, p: PaperPosition, stop: float) -> PaperPosition:
+    def move_stop(self, p: PaperPosition, stop: float, ts: Optional[datetime] = None) -> PaperPosition:
         """Trail the stop. Only ever tightens: a stop that would loosen (or not move) is ignored."""
         if p.stop is not None and not (stop > p.stop if p.side == "BUY" else stop < p.stop):
             return p
         self.db.execute("UPDATE terminal_paper_positions SET stop = :s WHERE id = :id AND status = 'open'", s=stop, id=p.id)
+        self._record_stop(p.id, stop, ts)
         with self._lock:
             p.stop = stop
         return p

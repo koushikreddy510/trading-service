@@ -214,5 +214,5 @@ class RuleEngine:
         if level is None or not (level < close if p.side == "BUY" else level > close):
             return False   # unknown, or on the wrong side of the last close: it would stop the trade out at once
         before = p.stop
-        self.book.move_stop(p, level)
+        self.book.move_stop(p, level, bucket_end(ctx.candles[-1].time, ctx.tf, ctx.exchange))
         return p.stop != before

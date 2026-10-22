@@ -400,3 +400,11 @@ CREATE TABLE IF NOT EXISTS terminal_saved_screens (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Every stop a paper position had, with when it was set (paper.py): the chart draws the trail as a stepped line.
+CREATE TABLE IF NOT EXISTS terminal_stop_history (
+    position_id TEXT NOT NULL,
+    ts          TIMESTAMPTZ NOT NULL,
+    stop        DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_terminal_stop_history_position ON terminal_stop_history (position_id, ts);

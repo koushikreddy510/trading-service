@@ -495,6 +495,12 @@ def _mark(t: Terminal, symbol: str) -> Optional[float]:
     return q.price if q else None
 
 
+@router.get("/trade-lines")
+def trade_lines(request: Request, symbol: str, days: int = Query(7, ge=1, le=60)):
+    """A symbol's open and recent paper positions with the stop's path, target and entry, for drawing on the chart."""
+    return {"positions": terminal_of(request).book.trade_lines(symbol_param(symbol), days)}
+
+
 @router.get("/positions")
 def positions(request: Request, symbol: Optional[str] = None, history: int = Query(50, ge=0, le=500)):
     t = terminal_of(request)
