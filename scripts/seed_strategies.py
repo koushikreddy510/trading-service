@@ -68,12 +68,13 @@ for tf in ("15m", "1H", "2H", "4H"):
 STRATEGIES += [("Golden cross 1D", T["golden"], "EMA Golden Cross Momentum"), ("Death cross 1D", T["death"], "EMA Death Cross Momentum")]
 
 have = {s["name"]: s["id"] for s in call("GET", f"{SCREENER}/strategies/")}
-ids = {}
+ids, lists = {}, {}
 for name, (desc, conds) in FILTERS.items():
     ids[name] = have.get(name) or call("POST", f"{SCREENER}/strategies/", {"name": name, "description": desc, "market_type": "stocks", "timeframe": "1D", "conditions": conds})["id"]
     res = call("POST", f"{TRADING}/terminal/screener-sync/apply", {"strategy_id": ids[name], "tolerance_pct": 0, "max_failing": 0, "per_cap": 40})
+    lists[name] = res["watchlist"]["name"]     # the name the sync actually used (it keeps an existing list's name)
     print("filter", name, "->", {k: res.get(k) for k in ("watchlist", "matched", "added") if k in res})
 for name, tpl, flt in STRATEGIES:
-    out = call("POST", f"{TRADING}/terminal/strategies", {"name": name, "template": tpl, "watchlist": f"Screen: {flt}"})
+    out = call("POST", f"{TRADING}/terminal/strategies", {"name": name, "template": tpl, "watchlist": lists[flt]})
     print("strategy", name, out)
 print(call("POST", f"{TRADING}/terminal/strategies/apply"))

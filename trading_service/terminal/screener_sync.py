@@ -304,6 +304,7 @@ class SyncPlan:
     rejected_by_financials: int
     truncated: bool
     candidates: list[Candidate]
+    timeframe: str = "1D"     # the candles the strategy is evaluated on; shown in the list's name
 
     def to_json(self) -> dict:
         return asdict(self)
@@ -449,13 +450,13 @@ def build_plan(
         strategy_id=int(strategy_id), strategy_name=strategy.get("name", ""), conditions=[describe_condition(c) for c in conditions],
         tolerance_pct=tol, max_failing=fails, max_symbols=cap, per_cap=per_cap, filters=flt, asof=asof,
         scanned=len(entries), matched_total=matched_total, near_total=len(found) - matched_total,
-        rejected_by_financials=rejected, truncated=truncated, candidates=found[:cap],
+        rejected_by_financials=rejected, truncated=truncated, candidates=found[:cap], timeframe=strategy.get("timeframe") or "1D",
     )
 
 
 # ============================================================================ the write
 def _name_for(plan: SyncPlan) -> str:
-    return f"Screen: {plan.strategy_name or plan.strategy_id}"[:MAX_NAME]
+    return f"Screen: {plan.strategy_name or plan.strategy_id} · {plan.timeframe}"[:MAX_NAME]
 
 
 def link_for_strategy(db: Database, strategy_id: int, user: str) -> Optional[dict]:

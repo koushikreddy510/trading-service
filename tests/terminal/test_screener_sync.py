@@ -319,7 +319,7 @@ class TestApply:
     def test_the_first_sync_creates_a_named_list_with_matches_then_near_misses(self, db, repo):
         res = sync.apply_plan(db, repo, plan_for(universe(), tolerance_pct=3))
         assert res["created"] is True
-        assert res["watchlist"]["name"] == "Screen: Momentum"
+        assert res["watchlist"]["name"] == "Screen: Momentum · 1D"
         assert res["watchlist"]["symbols"] == ["NSE:BIGMATCH-EQ", "NSE:SMALLMATCH-EQ", "NSE:CLOSER-EQ", "NSE:CLOSE-EQ", "NSE:EDGE-EQ"]
         assert (res["matched"], res["near"]) == (2, 3)
 
@@ -392,7 +392,7 @@ class TestApply:
         assert res["watchlist"]["symbols"][:3] == ["NSE:BIGMATCH-EQ", "NSE:SMALLMATCH-EQ", "NSE:LATE-EQ"]
 
     def test_a_name_already_used_by_another_list_is_refused_with_a_clear_message(self, db, repo):
-        repo.create("Screen: Momentum")
+        repo.create("Screen: Momentum · 1D")
         with pytest.raises(sync.SyncError, match="choose another name"):
             sync.apply_plan(db, repo, plan_for(universe()))
 
@@ -404,7 +404,7 @@ class TestApply:
         sync.apply_plan(db, repo, plan_for(universe()))
         other = sync.build_plan(FakeScreener(universe(), strategy={**STRATEGY, "id": 8, "name": "Breakout"}), 8)
         sync.apply_plan(db, repo, other)
-        assert {w["name"] for w in repo.list()} == {"Screen: Momentum", "Screen: Breakout"}
+        assert {w["name"] for w in repo.list()} == {"Screen: Momentum · 1D", "Screen: Breakout · 1D"}
 
     def test_unlinking_keeps_the_list_and_stops_syncing_it(self, db, repo):
         res = sync.apply_plan(db, repo, plan_for(universe(), tolerance_pct=3))
@@ -484,7 +484,7 @@ class TestApi:
         r = client.post("/terminal/screener-sync/apply", json={"strategy_id": 7, "tolerance_pct": 3})
         assert r.status_code == 200 and r.json()["created"] is True
         lists = {w["name"]: w["symbols"] for w in client.get("/terminal/watchlists").json()["watchlists"]}
-        assert lists["Screen: Momentum"][0] == "NSE:BIGMATCH-EQ" and len(lists["Screen: Momentum"]) == 5
+        assert lists["Screen: Momentum · 1D"][0] == "NSE:BIGMATCH-EQ" and len(lists["Screen: Momentum · 1D"]) == 5
         (link,) = client.get("/terminal/screener-sync/links").json()["links"]
         assert link["strategy_id"] == 7 and link["near_count"] == 3 and len(link["members"]) == 5
 
@@ -528,7 +528,7 @@ class TestCli:
         monkeypatch.setattr(cli, "make_screener_client", lambda: FakeScreener(universe()))
         assert cli.main(["sync-screener", "--strategy", "7", "--tolerance", "3"]) == 0
         out = json.loads(capsys.readouterr().out)
-        assert out["watchlist"] == "Screen: Momentum" and out["matched"] == 2 and out["near"] == 3 and len(out["added"]) == 5
+        assert out["watchlist"] == "Screen: Momentum · 1D" and out["matched"] == 2 and out["near"] == 3 and len(out["added"]) == 5
 
     def test_sync_all_refreshes_every_linked_list(self, db, capsys, monkeypatch):
         sync.apply_plan(db, WatchlistRepo(db), plan_for(universe(), tolerance_pct=3))

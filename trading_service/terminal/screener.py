@@ -79,7 +79,7 @@ FIELD_GROUPS: dict[str, list[str]] = {
     "Valuation": ["pe_ratio", "pb_ratio", "earnings_yield_pct", "peg_ratio", "pe_avg_eps", "dividend_yield"],
     "Profitability": ["roce_pct", "roe_pct", "q_opm_pct", "q_opm_change", "magic_rank"],
     "Growth": ["sales_cagr_3y", "profit_cagr_3y", "rev_growth_min_3y"],
-    "Quarterly results": ["q_net_profit", "q_revenue_yoy_pct", "q_profit_yoy_pct", "q_revenue_qoq_pct", "q_profit_qoq_pct", "q_growth_streak", "q_turnaround"],
+    "Quarterly results": ["q_revenue", "q_net_profit", "q_npm_pct", "q_revenue_yoy_pct", "q_profit_yoy_pct", "q_revenue_qoq_pct", "q_profit_qoq_pct", "q_growth_streak", "q_turnaround"],
     "Safety": ["interest_cover", "interest_change_pct"],
     "Data": ["bars", "eps_years"],
 }
@@ -379,7 +379,7 @@ SHORT: dict[str, str] = {
     "close": "Close", "change_pct": "Chg %", "volume_ratio": "Vol ×avg", "volume_ratio_5d": "5d vol ×", "rsi_14": "RSI", "ret_20d": "20d %", "ret_60d": "60d %",
     "pct_from_52w_high": "vs 52w high", "pct_from_52w_low": "vs 52w low", "market_cap": "Mkt cap (Cr)", "golden_cross": "Cross",
     "pe_ratio": "P/E", "pb_ratio": "P/B", "roce_pct": "ROCE %", "roe_pct": "ROE %", "dividend_yield": "Div yield %", "earnings_yield_pct": "Earn. yield %", "peg_ratio": "PEG",
-    "q_net_profit": "Qtr profit (Cr)", "q_opm_pct": "Qtr OPM %", "q_opm_change": "OPM Δ yoy", "q_revenue_yoy_pct": "Rev yoy %", "q_profit_yoy_pct": "Profit yoy %",
+    "q_revenue": "Qtr revenue (Cr)", "q_npm_pct": "Qtr NPM %", "q_net_profit": "Qtr profit (Cr)", "q_opm_pct": "Qtr OPM %", "q_opm_change": "OPM Δ yoy", "q_revenue_yoy_pct": "Rev yoy %", "q_profit_yoy_pct": "Profit yoy %",
     "q_revenue_qoq_pct": "Rev qoq %", "q_profit_qoq_pct": "Profit qoq %", "q_growth_streak": "Growth streak", "q_turnaround": "Turnaround",
     "sales_cagr_3y": "Sales 3y %", "profit_cagr_3y": "Profit 3y %", "rev_growth_min_3y": "Min rev gr. %", "interest_cover": "Int. cover", "interest_change_pct": "Interest Δ %",
     "pe_avg_eps": "P/avg EPS", "eps_years": "EPS yrs", "magic_rank": "Magic rank",

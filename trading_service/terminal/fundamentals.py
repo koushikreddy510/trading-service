@@ -20,6 +20,7 @@ from .sector_groups import get_parent_sector
 FUNDAMENTALS: dict[str, str] = {
     "pe_ratio": "P/E", "pb_ratio": "Price / book", "roce_pct": "ROCE, %", "roe_pct": "ROE, %", "dividend_yield": "Dividend yield, %",
     "earnings_yield_pct": "Earnings yield (100 / P/E), %", "peg_ratio": "PEG (P/E / 3-year profit CAGR)",
+    "q_revenue": "Latest quarter revenue, Cr", "q_npm_pct": "Latest quarter net profit margin, %",
     "q_net_profit": "Latest quarter net profit, Cr", "q_opm_pct": "Latest quarter operating margin, %",
     "q_opm_change": "Operating margin vs a year ago, percentage points",
     "q_revenue_yoy_pct": "Latest quarter revenue vs a year ago, %", "q_profit_yoy_pct": "Latest quarter profit vs a year ago, %",
@@ -35,9 +36,9 @@ FUNDAMENTALS: dict[str, str] = {
 # how the UI should write each column; anything not listed is a plain number
 UNITS: dict[str, str] = {
     **{k: "pct" for k in ("roce_pct", "roe_pct", "dividend_yield", "earnings_yield_pct", "q_opm_pct", "q_revenue_yoy_pct", "q_profit_yoy_pct", "q_revenue_qoq_pct",
-                          "q_profit_qoq_pct", "sales_cagr_3y", "profit_cagr_3y", "rev_growth_min_3y", "interest_change_pct", "q_opm_change")},
+                          "q_profit_qoq_pct", "sales_cagr_3y", "profit_cagr_3y", "rev_growth_min_3y", "interest_change_pct", "q_opm_change", "q_npm_pct")},
     **{k: "x" for k in ("pe_ratio", "pb_ratio", "peg_ratio", "interest_cover", "pe_avg_eps")},
-    "q_net_profit": "cr", "q_growth_streak": "int", "eps_years": "int", "q_turnaround": "int", "magic_rank": "int",
+    "q_net_profit": "cr", "q_revenue": "cr", "q_growth_streak": "int", "eps_years": "int", "q_turnaround": "int", "magic_rank": "int",
 }
 RATIO_COLUMNS = ("pe_ratio", "pb_ratio", "roce_pct", "roe_pct", "dividend_yield")
 MAX_STREAK = 8
@@ -93,6 +94,8 @@ def compute_fundamentals(quarterly: Sequence[dict], annual: Sequence[dict], rati
         i = len(q) - 1
         last, prev, ago = q[i], _previous(q, i), _year_ago(q, i)
         out["q_net_profit"] = _num(last.get("net_profit"))
+        out["q_revenue"] = _num(last.get("revenue"))
+        out["q_npm_pct"] = out["q_net_profit"] / out["q_revenue"] * 100.0 if out["q_net_profit"] is not None and out["q_revenue"] else None
         out["q_opm_pct"] = _num(last.get("opm_pct"))
         if ago and last.get("opm_pct") is not None and ago.get("opm_pct") is not None:
             out["q_opm_change"] = float(last["opm_pct"]) - float(ago["opm_pct"])

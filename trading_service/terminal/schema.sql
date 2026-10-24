@@ -427,3 +427,6 @@ CREATE INDEX IF NOT EXISTS idx_terminal_signals_bar ON terminal_signals (bar_tim
 CREATE INDEX IF NOT EXISTS idx_terminal_signals_symbol_bar ON terminal_signals (symbol, bar_time DESC);
 CREATE INDEX IF NOT EXISTS idx_terminal_paper_closed ON terminal_paper_positions (status, closed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_terminal_paper_signal ON terminal_paper_positions (signal_id);
+
+ALTER TABLE terminal_screener_metrics ADD COLUMN IF NOT EXISTS q_revenue DOUBLE PRECISION;
+ALTER TABLE terminal_screener_metrics ADD COLUMN IF NOT EXISTS q_npm_pct DOUBLE PRECISION;

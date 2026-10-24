@@ -27,6 +27,7 @@ class TestQuarterly:
         assert f["q_revenue_yoy_pct"] == pytest.approx(50.0) and f["q_profit_yoy_pct"] == pytest.approx(100.0)
         assert f["q_revenue_qoq_pct"] == pytest.approx(150 / 130 * 100 - 100) and f["q_profit_qoq_pct"] == pytest.approx(25.0)
         assert f["q_opm_change"] == pytest.approx(5.0) and f["q_net_profit"] == 20
+        assert f["q_revenue"] == 150 and f["q_npm_pct"] == pytest.approx(20 / 150 * 100)
 
     def test_without_a_year_of_history_year_on_year_is_unknown_not_zero(self):
         f = fd.compute_fundamentals([q(0, 100, 10), q(1, 110, 12)], [], {})
