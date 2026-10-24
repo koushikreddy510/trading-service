@@ -468,10 +468,11 @@ def link_for_strategy(db: Database, strategy_id: int, user: str) -> Optional[dic
 
 
 def protected_symbols(db: Database) -> set[str]:
-    """Symbols a sync must never take off a list: they have an open paper position or an enabled rule."""
+    """Symbols a sync must never take off a list: they have an open paper position or an enabled rule.
+    Rules a strategy made from the list itself ("[S] ...", see strategies.py) do not count: they follow the list."""
     rows = db.rows(
         "SELECT symbol FROM terminal_paper_positions WHERE status = 'open' "
-        "UNION SELECT symbol FROM terminal_rules WHERE enabled"
+        "UNION SELECT symbol FROM terminal_rules WHERE enabled AND name NOT LIKE '[S] %'"
     )
     return {r["symbol"] for r in rows}
 

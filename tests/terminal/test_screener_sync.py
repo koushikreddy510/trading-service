@@ -386,6 +386,15 @@ class TestApply:
         res = sync.apply_plan(db, repo, plan_for([stock("NSE:BIGMATCH-EQ", rsi=70, ema=90, matched=True)], tolerance_pct=3))
         assert "NSE:EDGE-EQ" in res["kept_for_trading"]
 
+    def test_a_rule_a_strategy_made_from_the_list_does_not_hold_a_stock_on_it(self, db, repo):
+        sync.apply_plan(db, repo, plan_for(universe(), tolerance_pct=3))
+        db.execute(
+            "INSERT INTO terminal_rules (id, name, symbol, timeframe, side, condition, stop, quantity) "
+            "VALUES ('r2', '[S] Some strategy', 'NSE:EDGE-EQ', '1H', 'BUY', CAST('{}' AS JSONB), CAST('{}' AS JSONB), 1)"
+        )
+        res = sync.apply_plan(db, repo, plan_for([stock("NSE:BIGMATCH-EQ", rsi=70, ema=90, matched=True)], tolerance_pct=3))
+        assert "NSE:EDGE-EQ" not in res["kept_for_trading"] and "NSE:EDGE-EQ" not in res["watchlist"]["symbols"]
+
     def test_the_list_is_ordered_matches_first_after_every_sync(self, db, repo):
         sync.apply_plan(db, repo, plan_for(universe(), tolerance_pct=3))
         res = sync.apply_plan(db, repo, plan_for(universe() + [stock("NSE:LATE-EQ", rsi=80, ema=90, matched=True, market_cap=1)], tolerance_pct=3))
