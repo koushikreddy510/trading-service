@@ -555,3 +555,14 @@ def test_exact_matches_only_asks_the_screener_for_matches_only():
     client = FakeScreener([stock("NSE:A-EQ", 65, 90, matched=True), stock("NSE:B-EQ", 50, 90)])
     got, _ = sync.fetch_entries(client, 7, matched_only=True)
     assert [e["symbol"] for e in got] == ["NSE:A-EQ"] and client.calls[-1][1]["matched_only"] == "true"
+
+
+def test_per_cap_takes_the_best_n_from_each_size_bucket_and_skips_unknown_caps():
+    cr = 1e7   # entries carry market cap in rupees
+    entries = [stock(f"NSE:L{i}-EQ", 65, 90, matched=True, market_cap=(30000 - i) * cr) for i in range(3)]
+    entries += [stock(f"NSE:M{i}-EQ", 65, 90, matched=True, market_cap=(9000 - i) * cr) for i in range(3)]
+    entries += [stock("NSE:S0-EQ", 65, 90, matched=True, market_cap=0), stock("NSE:NONE-EQ", 65, 90, matched=True, market_cap=0)]
+    fin = lambda sym: {"ratios": {"market_cap_cr": 2000.0}} if sym == "NSE:S0-EQ" else {"ratios": {}}   # screener.in fallback
+    plan = sync.build_plan(FakeScreener(entries), 7, tolerance_pct=0, max_failing=0, per_cap=2, financials=fin)
+    assert [c.symbol for c in plan.candidates] == ["NSE:L0-EQ", "NSE:L1-EQ", "NSE:M0-EQ", "NSE:M1-EQ", "NSE:S0-EQ"]
+    assert [c.cap_bucket for c in plan.candidates] == ["large", "large", "mid", "mid", "small"] and plan.truncated

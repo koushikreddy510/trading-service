@@ -71,7 +71,7 @@ have = {s["name"]: s["id"] for s in call("GET", f"{SCREENER}/strategies/")}
 ids = {}
 for name, (desc, conds) in FILTERS.items():
     ids[name] = have.get(name) or call("POST", f"{SCREENER}/strategies/", {"name": name, "description": desc, "market_type": "stocks", "timeframe": "1D", "conditions": conds})["id"]
-    res = call("POST", f"{TRADING}/terminal/screener-sync/apply", {"strategy_id": ids[name], "tolerance_pct": 0, "max_failing": 0, "max_symbols": 40})
+    res = call("POST", f"{TRADING}/terminal/screener-sync/apply", {"strategy_id": ids[name], "tolerance_pct": 0, "max_failing": 0, "per_cap": 40})
     print("filter", name, "->", {k: res.get(k) for k in ("watchlist", "matched", "added") if k in res})
 for name, tpl, flt in STRATEGIES:
     out = call("POST", f"{TRADING}/terminal/strategies", {"name": name, "template": tpl, "watchlist": f"Screen: {flt}"})

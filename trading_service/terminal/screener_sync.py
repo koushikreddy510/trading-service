@@ -274,6 +274,17 @@ class Candidate:
     sector: str = ""
     market_cap: float = 0.0
     notes: list[str] = field(default_factory=list)   # e.g. "no financials on file"
+    cap_bucket: str = ""
+
+
+# Market-cap buckets in crore (the same cut-offs the strategy-screener uses for Large / Mid / Small / Micro).
+CAP_BUCKETS = (("large", 20000.0), ("mid", 5000.0), ("small", 1000.0), ("micro", 0.0))
+
+
+def cap_bucket(cap_cr: Optional[float]) -> Optional[str]:
+    if not cap_cr or cap_cr <= 0:
+        return None
+    return next(name for name, floor in CAP_BUCKETS if cap_cr >= floor)
 
 
 @dataclass
@@ -284,6 +295,7 @@ class SyncPlan:
     tolerance_pct: float
     max_failing: int
     max_symbols: int
+    per_cap: int
     filters: list[dict]
     asof: Optional[str]
     scanned: int
@@ -369,13 +381,20 @@ def build_plan(
     max_symbols: Any = DEFAULT_MAX_SYMBOLS,
     filters: Any = None,
     financials: Optional[Callable[[str], dict]] = None,
+    per_cap: Any = 0,
 ) -> SyncPlan:
     """Ask the screener, measure the near-misses, apply financial gates. Reads only; writes nothing.
 
     `financials(symbol)` returns what `financials.get_financials` returns; it is needed only when `filters`
     is non-empty."""
+    try:
+        per_cap = int(per_cap or 0)
+    except (TypeError, ValueError):
+        raise SyncError("per_cap must be a whole number") from None
+    if per_cap:
+        max_symbols = per_cap * len(CAP_BUCKETS)     # the list's size limit follows: N from each bucket
     tol, fails, cap, flt = clean_settings(tolerance_pct, max_failing, max_symbols, filters)
-    if flt and financials is None:
+    if (flt or per_cap) and financials is None:
         raise SyncError("financial filters need a financials lookup")
     strategy = fetch_strategy(client, strategy_id)
     conditions = strategy.get("conditions") or []
@@ -414,13 +433,23 @@ def build_plan(
                 rejected += 1
         found = kept
 
+    truncated = len(found) > cap
+    if per_cap:
+        # up to `per_cap` from each size bucket (already ordered best first); stocks with no market cap anywhere are skipped
+        for c in found:
+            cr = c.market_cap / 1e7 or _number(((financials(c.symbol) or {}).get("ratios") or {}).get("market_cap_cr"))  # type: ignore[misc]
+            c.cap_bucket = cap_bucket(cr) or ""
+        by = {name: [c for c in found if c.cap_bucket == name] for name, _ in CAP_BUCKETS}
+        truncated = any(len(v) > per_cap for v in by.values())
+        found = [c for name, _ in CAP_BUCKETS for c in by[name][:per_cap]]
+
     matched_total = sum(1 for c in found if c.status == "matched")
     asof = max((str(e.get("date"))[:10] for e in entries if e.get("date")), default=None)
     return SyncPlan(
         strategy_id=int(strategy_id), strategy_name=strategy.get("name", ""), conditions=[describe_condition(c) for c in conditions],
-        tolerance_pct=tol, max_failing=fails, max_symbols=cap, filters=flt, asof=asof,
+        tolerance_pct=tol, max_failing=fails, max_symbols=cap, per_cap=per_cap, filters=flt, asof=asof,
         scanned=len(entries), matched_total=matched_total, near_total=len(found) - matched_total,
-        rejected_by_financials=rejected, truncated=len(found) > cap, candidates=found[:cap],
+        rejected_by_financials=rejected, truncated=truncated, candidates=found[:cap],
     )
 
 
@@ -500,12 +529,12 @@ def apply_plan(db: Database, repo: WatchlistRepo, plan: SyncPlan, name: Optional
     )
     repo.reorder(wid, new_symbols)
     db.execute(
-        "INSERT INTO terminal_screener_links (watchlist_id, strategy_id, strategy_name, tolerance_pct, max_failing, max_symbols, "
+        "INSERT INTO terminal_screener_links (watchlist_id, strategy_id, strategy_name, tolerance_pct, max_failing, max_symbols, per_cap, "
         "filters, last_run_at, last_asof, matched_count, near_count) "
-        "VALUES (:w, :sid, :sn, :tol, :mf, :ms, CAST(:f AS JSONB), :t, :asof, :mc, :nc) "
-        "ON CONFLICT (watchlist_id) DO UPDATE SET strategy_name = :sn, tolerance_pct = :tol, max_failing = :mf, max_symbols = :ms, "
+        "VALUES (:w, :sid, :sn, :tol, :mf, :ms, :pc, CAST(:f AS JSONB), :t, :asof, :mc, :nc) "
+        "ON CONFLICT (watchlist_id) DO UPDATE SET strategy_name = :sn, tolerance_pct = :tol, max_failing = :mf, max_symbols = :ms, per_cap = :pc, "
         "filters = CAST(:f AS JSONB), last_run_at = :t, last_asof = :asof, matched_count = :mc, near_count = :nc",
-        w=wid, sid=plan.strategy_id, sn=plan.strategy_name, tol=plan.tolerance_pct, mf=plan.max_failing, ms=plan.max_symbols,
+        w=wid, sid=plan.strategy_id, sn=plan.strategy_name, tol=plan.tolerance_pct, mf=plan.max_failing, ms=plan.max_symbols, pc=plan.per_cap,
         f=jdump(plan.filters), t=now, asof=plan.asof, mc=plan.matched_total, nc=plan.near_total,
     )
     return {
@@ -526,11 +555,11 @@ def sync_strategy(db: Database, repo: WatchlistRepo, client: Any, strategy_id: i
 def re_sync_all(db: Database, repo: WatchlistRepo, client: Any) -> list[dict]:
     """Refresh every linked list with the settings it was created with (the scheduled daily job)."""
     out = []
-    for link in db.rows("SELECT l.strategy_id, l.tolerance_pct, l.max_failing, l.max_symbols, l.filters FROM terminal_screener_links l "
+    for link in db.rows("SELECT l.strategy_id, l.tolerance_pct, l.max_failing, l.max_symbols, l.per_cap, l.filters FROM terminal_screener_links l "
                         "JOIN terminal_watchlists w ON w.id = l.watchlist_id WHERE w.user_id = :u", u=repo.user):
         try:
             res = sync_strategy(db, repo, client, link["strategy_id"], tolerance_pct=link["tolerance_pct"], max_failing=link["max_failing"],
-                                max_symbols=link["max_symbols"], filters=link["filters"])
+                                max_symbols=link["max_symbols"], per_cap=link["per_cap"], filters=link["filters"])
             out.append({"strategy_id": link["strategy_id"], "ok": True, "added": len(res["added"]), "removed": len(res["removed"]),
                         "matched": res["matched"], "near": res["near"]})
         except SyncError as e:
@@ -554,7 +583,7 @@ def list_links(db: Database, user: str) -> list[dict]:
         out.append({
             "watchlist_id": l["watchlist_id"], "watchlist_name": l["watchlist_name"], "strategy_id": l["strategy_id"],
             "strategy_name": l["strategy_name"], "tolerance_pct": l["tolerance_pct"], "max_failing": l["max_failing"],
-            "max_symbols": l["max_symbols"], "filters": l["filters"],
+            "max_symbols": l["max_symbols"], "per_cap": l["per_cap"], "filters": l["filters"],
             "last_run_at": l["last_run_at"].isoformat() if l["last_run_at"] else None, "last_asof": l["last_asof"],
             "matched_count": l["matched_count"], "near_count": l["near_count"], "members": members,
         })

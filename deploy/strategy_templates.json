@@ -240,7 +240,15 @@
     "qty": 40
    }
   ],
-  "timeframe": "15m"
+  "timeframe": "15m",
+  "entry_score_indicator": {
+   "name": "supertrend",
+   "output": "line",
+   "params": {
+    "period": 10,
+    "multiplier": 3
+   }
+  }
  },
  "st_short": {
   "side": "SELL",
@@ -403,7 +411,15 @@
     "qty": 40
    }
   ],
-  "timeframe": "15m"
+  "timeframe": "15m",
+  "entry_score_indicator": {
+   "name": "supertrend",
+   "output": "line",
+   "params": {
+    "period": 10,
+    "multiplier": 3
+   }
+  }
  },
  "golden": {
   "side": "BUY",

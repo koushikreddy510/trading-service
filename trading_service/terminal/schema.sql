@@ -418,3 +418,5 @@ CREATE TABLE IF NOT EXISTS terminal_strategies (
     enabled    BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE terminal_screener_links ADD COLUMN IF NOT EXISTS per_cap INTEGER NOT NULL DEFAULT 0;

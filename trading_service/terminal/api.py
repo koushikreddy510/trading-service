@@ -779,7 +779,7 @@ def sync_failure(e: sync.SyncError) -> HTTPException:
 
 
 def sync_settings(body: dict) -> dict:
-    keys = ("tolerance_pct", "max_failing", "max_symbols", "filters")
+    keys = ("tolerance_pct", "max_failing", "max_symbols", "per_cap", "filters")
     return {k: body[k] for k in keys if k in body}
 
 
