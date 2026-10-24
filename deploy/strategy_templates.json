@@ -1,0 +1,488 @@
+{
+ "death": {
+  "side": "SELL",
+  "quantity": 100,
+  "condition": {
+   "a": {
+    "kind": "indicator",
+    "name": "sma",
+    "output": "value",
+    "params": {
+     "period": 50
+    }
+   },
+   "b": {
+    "kind": "indicator",
+    "name": "sma",
+    "output": "value",
+    "params": {
+     "period": 200
+    }
+   },
+   "type": "cross",
+   "direction": "below"
+  },
+  "stop": {
+   "mult": 2.0,
+   "type": "atr",
+   "period": 14
+  },
+  "target": {
+   "type": "rr",
+   "ratio": 3.0
+  },
+  "trail": {
+   "name": "sma",
+   "type": "indicator",
+   "output": "value",
+   "params": {
+    "period": 50
+   },
+   "timeframe": "1D"
+  },
+  "exit_condition": {
+   "a": {
+    "kind": "close"
+   },
+   "b": {
+    "kind": "indicator",
+    "name": "sma",
+    "output": "value",
+    "params": {
+     "period": 50
+    }
+   },
+   "type": "cross",
+   "direction": "above"
+  },
+  "exit_timeframe": "1D",
+  "exit_condition_2": {
+   "a": {
+    "kind": "indicator",
+    "name": "sma",
+    "output": "value",
+    "params": {
+     "period": 50
+    }
+   },
+   "b": {
+    "kind": "indicator",
+    "name": "sma",
+    "output": "value",
+    "params": {
+     "period": 200
+    }
+   },
+   "type": "cross",
+   "direction": "above"
+  },
+  "exit_timeframe_2": "1D",
+  "timeframe": "1D"
+ },
+ "st_long": {
+  "side": "BUY",
+  "quantity": 100,
+  "condition": {
+   "type": "all",
+   "conditions": [
+    {
+     "type": "any",
+     "conditions": [
+      {
+       "type": "all",
+       "conditions": [
+        {
+         "a": {
+          "kind": "indicator",
+          "name": "supertrend",
+          "output": "direction",
+          "params": {
+           "period": 5,
+           "multiplier": 2.0
+          }
+         },
+         "b": {
+          "kind": "value",
+          "value": 0.0
+         },
+         "type": "cross",
+         "direction": "above"
+        },
+        {
+         "a": {
+          "kind": "indicator",
+          "name": "supertrend",
+          "output": "direction",
+          "params": {
+           "period": 10,
+           "multiplier": 3.0
+          }
+         },
+         "b": {
+          "kind": "value",
+          "value": 0.0
+         },
+         "op": ">",
+         "type": "compare"
+        }
+       ]
+      },
+      {
+       "type": "all",
+       "conditions": [
+        {
+         "a": {
+          "kind": "indicator",
+          "name": "supertrend",
+          "output": "direction",
+          "params": {
+           "period": 10,
+           "multiplier": 3.0
+          }
+         },
+         "b": {
+          "kind": "value",
+          "value": 0.0
+         },
+         "type": "cross",
+         "direction": "above"
+        },
+        {
+         "a": {
+          "kind": "indicator",
+          "name": "supertrend",
+          "output": "direction",
+          "params": {
+           "period": 5,
+           "multiplier": 2.0
+          }
+         },
+         "b": {
+          "kind": "value",
+          "value": 0.0
+         },
+         "op": ">",
+         "type": "compare"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "end": "14:45",
+     "type": "time_between",
+     "start": "09:30"
+    }
+   ]
+  },
+  "stop": {
+   "type": "candle",
+   "buffer_pct": 0.5
+  },
+  "target": {
+   "type": "rr",
+   "ratio": 3.0
+  },
+  "trail": {
+   "name": "supertrend",
+   "type": "indicator",
+   "output": "line",
+   "params": {
+    "period": 10,
+    "multiplier": 3.0
+   },
+   "timeframe": "15m"
+  },
+  "exit_condition": {
+   "a": {
+    "kind": "close"
+   },
+   "b": {
+    "kind": "indicator",
+    "name": "supertrend",
+    "output": "line",
+    "params": {
+     "period": 5,
+     "multiplier": 2.0
+    }
+   },
+   "type": "cross",
+   "direction": "below"
+  },
+  "exit_timeframe": "15m",
+  "exit_condition_2": {
+   "a": {
+    "kind": "close"
+   },
+   "b": {
+    "kind": "indicator",
+    "name": "supertrend",
+    "output": "line",
+    "params": {
+     "period": 10,
+     "multiplier": 3.0
+    }
+   },
+   "type": "cross",
+   "direction": "below"
+  },
+  "exit_timeframe_2": "15m",
+  "entry_levels": [
+   {
+    "qty": 100,
+    "max_dist_pct": 1.0
+   },
+   {
+    "qty": 70,
+    "max_dist_pct": 3.0
+   },
+   {
+    "qty": 40
+   }
+  ],
+  "timeframe": "15m"
+ },
+ "st_short": {
+  "side": "SELL",
+  "quantity": 100,
+  "condition": {
+   "type": "all",
+   "conditions": [
+    {
+     "type": "any",
+     "conditions": [
+      {
+       "type": "all",
+       "conditions": [
+        {
+         "a": {
+          "kind": "indicator",
+          "name": "supertrend",
+          "output": "direction",
+          "params": {
+           "period": 5,
+           "multiplier": 2.0
+          }
+         },
+         "b": {
+          "kind": "value",
+          "value": 0.0
+         },
+         "type": "cross",
+         "direction": "below"
+        },
+        {
+         "a": {
+          "kind": "indicator",
+          "name": "supertrend",
+          "output": "direction",
+          "params": {
+           "period": 10,
+           "multiplier": 3.0
+          }
+         },
+         "b": {
+          "kind": "value",
+          "value": 0.0
+         },
+         "op": "<",
+         "type": "compare"
+        }
+       ]
+      },
+      {
+       "type": "all",
+       "conditions": [
+        {
+         "a": {
+          "kind": "indicator",
+          "name": "supertrend",
+          "output": "direction",
+          "params": {
+           "period": 10,
+           "multiplier": 3.0
+          }
+         },
+         "b": {
+          "kind": "value",
+          "value": 0.0
+         },
+         "type": "cross",
+         "direction": "below"
+        },
+        {
+         "a": {
+          "kind": "indicator",
+          "name": "supertrend",
+          "output": "direction",
+          "params": {
+           "period": 5,
+           "multiplier": 2.0
+          }
+         },
+         "b": {
+          "kind": "value",
+          "value": 0.0
+         },
+         "op": "<",
+         "type": "compare"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "end": "14:45",
+     "type": "time_between",
+     "start": "09:30"
+    }
+   ]
+  },
+  "stop": {
+   "type": "candle",
+   "buffer_pct": 0.5
+  },
+  "target": {
+   "type": "rr",
+   "ratio": 3.0
+  },
+  "trail": {
+   "name": "supertrend",
+   "type": "indicator",
+   "output": "line",
+   "params": {
+    "period": 10,
+    "multiplier": 3.0
+   },
+   "timeframe": "15m"
+  },
+  "exit_condition": {
+   "a": {
+    "kind": "close"
+   },
+   "b": {
+    "kind": "indicator",
+    "name": "supertrend",
+    "output": "line",
+    "params": {
+     "period": 5,
+     "multiplier": 2.0
+    }
+   },
+   "type": "cross",
+   "direction": "above"
+  },
+  "exit_timeframe": "15m",
+  "exit_condition_2": {
+   "a": {
+    "kind": "close"
+   },
+   "b": {
+    "kind": "indicator",
+    "name": "supertrend",
+    "output": "line",
+    "params": {
+     "period": 10,
+     "multiplier": 3.0
+    }
+   },
+   "type": "cross",
+   "direction": "above"
+  },
+  "exit_timeframe_2": "15m",
+  "entry_levels": [
+   {
+    "qty": 100,
+    "max_dist_pct": 1.0
+   },
+   {
+    "qty": 70,
+    "max_dist_pct": 3.0
+   },
+   {
+    "qty": 40
+   }
+  ],
+  "timeframe": "15m"
+ },
+ "golden": {
+  "side": "BUY",
+  "quantity": 100,
+  "condition": {
+   "a": {
+    "kind": "indicator",
+    "name": "sma",
+    "output": "value",
+    "params": {
+     "period": 50
+    }
+   },
+   "b": {
+    "kind": "indicator",
+    "name": "sma",
+    "output": "value",
+    "params": {
+     "period": 200
+    }
+   },
+   "type": "cross",
+   "direction": "above"
+  },
+  "stop": {
+   "mult": 2.0,
+   "type": "atr",
+   "period": 14
+  },
+  "target": {
+   "type": "rr",
+   "ratio": 3.0
+  },
+  "trail": {
+   "name": "sma",
+   "type": "indicator",
+   "output": "value",
+   "params": {
+    "period": 50
+   },
+   "timeframe": "1D"
+  },
+  "exit_condition": {
+   "a": {
+    "kind": "close"
+   },
+   "b": {
+    "kind": "indicator",
+    "name": "sma",
+    "output": "value",
+    "params": {
+     "period": 50
+    }
+   },
+   "type": "cross",
+   "direction": "below"
+  },
+  "exit_timeframe": "1D",
+  "exit_condition_2": {
+   "a": {
+    "kind": "indicator",
+    "name": "sma",
+    "output": "value",
+    "params": {
+     "period": 50
+    }
+   },
+   "b": {
+    "kind": "indicator",
+    "name": "sma",
+    "output": "value",
+    "params": {
+     "period": 200
+    }
+   },
+   "type": "cross",
+   "direction": "below"
+  },
+  "exit_timeframe_2": "1D",
+  "timeframe": "1D"
+ }
+}

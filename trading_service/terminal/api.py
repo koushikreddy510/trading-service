@@ -47,6 +47,7 @@ from .indicators import SPECS
 from .rules import InvalidRule, referenced_ids, referenced_refs_of, rule_from_payload
 from .runtime import Terminal, build_terminal
 from .timeframes import TIMEFRAMES, exchange_of, is_complete, validate_timeframe
+from .strategies import StrategyError, StrategyRepo
 from .watchlists import WatchlistError, normalise_symbol
 
 router = APIRouter(prefix="/terminal", tags=["terminal"])
@@ -481,6 +482,40 @@ async def delete_rule(request: Request, rule_id: str):
     if not t.rules.delete(rule_id):
         raise HTTPException(404, "rule not found")
     await t.refresh_background_subscriptions()
+
+
+# ------------------------------------------------------------------ strategies (rule template x watchlist)
+@router.get("/strategies")
+def list_strategies(request: Request):
+    return {"strategies": StrategyRepo(terminal_of(request).db).list()}
+
+
+@router.post("/strategies", status_code=201)
+def save_strategy(request: Request, body: dict = Body(...)):
+    try:
+        return StrategyRepo(terminal_of(request).db).save(body)
+    except StrategyError as e:
+        raise bad_request(e) from None
+
+
+@router.delete("/strategies/{strategy_id}", status_code=204)
+def delete_strategy(request: Request, strategy_id: str):
+    if not StrategyRepo(terminal_of(request).db).delete(strategy_id):
+        raise HTTPException(404, "strategy not found")
+
+
+@router.post("/strategies/apply")
+async def apply_strategies(request: Request):
+    """Bring every enabled-or-disabled strategy's per-symbol rules in line with its watchlist (also run daily by the scheduler)."""
+    t = terminal_of(request)
+    repo, out = StrategyRepo(t.db), []
+    for s in repo.list():
+        try:
+            out.append(repo.apply(s, t.rules, t.watchlists))
+        except (StrategyError, InvalidRule) as e:
+            out.append({"strategy": s["name"], "error": str(e)})
+    await t.refresh_background_subscriptions()
+    return {"results": out}
 
 
 @router.get("/signals")

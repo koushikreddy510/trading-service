@@ -408,3 +408,13 @@ CREATE TABLE IF NOT EXISTS terminal_stop_history (
     stop        DOUBLE PRECISION NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_terminal_stop_history_position ON terminal_stop_history (position_id, ts);
+
+-- A strategy = a rule template (no symbol) + a watchlist. strategies.apply() keeps one rule per symbol in the list.
+CREATE TABLE IF NOT EXISTS terminal_strategies (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE,
+    template   JSONB NOT NULL,
+    watchlist  TEXT NOT NULL,
+    enabled    BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
