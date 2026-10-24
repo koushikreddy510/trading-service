@@ -420,3 +420,10 @@ CREATE TABLE IF NOT EXISTS terminal_strategies (
 );
 
 ALTER TABLE terminal_screener_links ADD COLUMN IF NOT EXISTS per_cap INTEGER NOT NULL DEFAULT 0;
+
+-- Lookups that grow with intraday strategies: newest signals (global and per symbol), closed-trade history, and the
+-- signal -> position join (also what the ON DELETE SET NULL of a deleted rule's signals has to search).
+CREATE INDEX IF NOT EXISTS idx_terminal_signals_bar ON terminal_signals (bar_time DESC);
+CREATE INDEX IF NOT EXISTS idx_terminal_signals_symbol_bar ON terminal_signals (symbol, bar_time DESC);
+CREATE INDEX IF NOT EXISTS idx_terminal_paper_closed ON terminal_paper_positions (status, closed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_terminal_paper_signal ON terminal_paper_positions (signal_id);
