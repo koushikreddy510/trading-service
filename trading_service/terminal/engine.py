@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Callable, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 from .candles import Candle, completed
 from .conditions import (
@@ -46,7 +46,27 @@ CandleSource = Callable[[str, str, int], Sequence[Candle]]
 # (rule, open signal) -> (quantity, why not). Live trading uses the rule's own quantity; the backtest sizes by capital.
 Sizer = Callable[[Rule, Signal], "tuple[int, str]"]
 
-LOOKBACK_BARS = 500
+LOOKBACK_BARS = 500          # daily / weekly: an SMA 200 needs it
+MIN_INTRADAY_BARS = 150      # Supertrend, EMA, ATR settle well inside this; 500 meant ~30 days of 1-minute rows read per check
+_PERIOD_KEYS = ("period", "slow", "length", "atr_period")
+
+
+def _longest_period(node: Any) -> int:
+    """The largest indicator period anywhere in a rule / exit / trail definition."""
+    if isinstance(node, dict):
+        own = max((int(v) for k, v in node.items() if k in _PERIOD_KEYS and isinstance(v, (int, float)) and not isinstance(v, bool)), default=0)
+        return max([own, *(_longest_period(v) for v in node.values())])
+    if isinstance(node, (list, tuple)):
+        return max((_longest_period(v) for v in node), default=0)
+    return 0
+
+
+def lookback_bars(timeframe: str, *definitions: Any) -> int:
+    """How many candles to read for `definitions` (rules, trails, exits) on `timeframe`: all of it for 1D / 1W, otherwise
+    three times the longest indicator period, at least MIN_INTRADAY_BARS and at most LOOKBACK_BARS."""
+    if timeframe in ("1D", "1W"):
+        return LOOKBACK_BARS
+    return min(LOOKBACK_BARS, max(MIN_INTRADAY_BARS, 3 * _longest_period(list(definitions))))
 
 
 def _utcnow() -> datetime:
@@ -103,7 +123,8 @@ class RuleEngine:
         if not rules:
             return []
         now = self.clock()
-        bars = completed(self.candles(symbol, timeframe, LOOKBACK_BARS), timeframe, now, symbol)
+        need = lookback_bars(timeframe, *[(r.condition, r.stop, r.trail, r.entry_score_indicator) for r in rules])
+        bars = completed(self.candles(symbol, timeframe, need), timeframe, now, symbol)
         if not bars or bars[-1].time < bar_start:
             log.debug("rule engine: no completed %s bar >= %s for %s yet", timeframe, bar_start, symbol)
             return []
@@ -171,7 +192,8 @@ class RuleEngine:
         if not due:
             return []
         now = self.clock()
-        bars = completed(self.candles(symbol, timeframe, LOOKBACK_BARS), timeframe, now, symbol)
+        need = lookback_bars(timeframe, *[(p.trail, p.exit_condition, p.exit_condition_2) for p, _, _ in due])
+        bars = completed(self.candles(symbol, timeframe, need), timeframe, now, symbol)
         if not bars or bars[-1].time < bar_start:
             return []
         last = bars[-1]

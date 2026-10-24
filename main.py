@@ -3,6 +3,7 @@ Trading service API: accounts, orders, positions, PnL.
 Prometheus metrics at /metrics for Grafana dashboards.
 Run: uvicorn main:app --host 0.0.0.0 --port 8001
 """
+import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import date
@@ -23,7 +24,8 @@ async def lifespan(app: FastAPI):
         from trading_service.db import ensure_tables
         ensure_tables()
     except Exception:
-        pass  # Tables may already exist or DATABASE_URL not set yet
+        # DATABASE_URL may simply not be set (the rest of the service runs without it); anything else must be visible
+        logging.getLogger(__name__).exception("ensure_tables failed")
     # Chart terminal (watchlists, live candles, rules, paper positions). If it cannot
     # start, the rest of this service is unaffected and /terminal answers 503.
     from trading_service.terminal.api import terminal_lifespan

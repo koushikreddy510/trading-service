@@ -7,7 +7,7 @@ its rule off: open positions keep being managed (see runtime), and nothing is de
 """
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 from .db import Database, jdump, new_id
 from .drawings import LOCAL_USER
@@ -51,21 +51,33 @@ class StrategyRepo:
     def delete(self, strategy_id: str) -> bool:
         return self.db.execute("DELETE FROM terminal_strategies WHERE id = :i", i=strategy_id) > 0
 
-    def apply(self, strategy: Mapping[str, Any], rules: RuleRepo, watchlists: WatchlistRepo) -> dict:
+    def apply(self, strategy: Mapping[str, Any], rules: RuleRepo, watchlists: WatchlistRepo, existing: Optional[list] = None) -> dict:
+        """`existing`: every rule already stored, when the caller applies many strategies and has read them once."""
         wl = next((w for w in watchlists.list() if w["name"].lower() == strategy["watchlist"].lower()), None)
         if wl is None:
             raise StrategyError(f"watchlist '{strategy['watchlist']}' not found")
         rname, symbols = rule_name(strategy["name"]), list(wl["symbols"])
-        have = {r.symbol: r for r in rules.list() if r.name == rname}
-        added = updated = 0
-        for sym in symbols:
-            payload = {**strategy["template"], "symbol": sym, "name": rname, "enabled": strategy["enabled"]}
-            rule = rule_from_payload(payload, have[sym].id if sym in have else None)
-            rules.save(rule)
-            added, updated = (added + 1, updated) if sym not in have else (added, updated + 1)
+        have = {r.symbol: r for r in (existing if existing is not None else rules.list()) if r.name == rname}
+        fresh = [
+            rule_from_payload({**strategy["template"], "symbol": sym, "name": rname, "enabled": strategy["enabled"]}, have[sym].id if sym in have else None)
+            for sym in symbols
+        ]
+        rules.save_many(fresh)                                  # one transaction, not one per symbol
         off = 0
+        keep = set(symbols)
         for sym, r in have.items():
-            if sym not in symbols and r.enabled:
+            if sym not in keep and r.enabled:
                 rules.set_enabled(r.id, False)
                 off += 1
-        return {"strategy": strategy["name"], "symbols": len(symbols), "added": added, "updated": updated, "switched_off": off}
+        updated = sum(1 for sym in symbols if sym in have)
+        return {"strategy": strategy["name"], "symbols": len(symbols), "added": len(symbols) - updated, "updated": updated, "switched_off": off}
+
+    def apply_all(self, rules: RuleRepo, watchlists: WatchlistRepo) -> list[dict]:
+        """Every strategy against its watchlist; one that cannot be applied reports its error and the rest still run."""
+        existing, out = rules.list(), []      # a strategy only looks at its own rules (by name), so one read serves all
+        for s in self.list():
+            try:
+                out.append(self.apply(s, rules, watchlists, existing))
+            except (StrategyError, InvalidRule) as e:
+                out.append({"strategy": s["name"], "error": str(e)})
+        return out

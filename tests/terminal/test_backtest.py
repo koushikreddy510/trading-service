@@ -221,8 +221,9 @@ class TestIntraday:
             "condition": {"type": "cross", "direction": "above", "a": {"kind": "close"}, "b": {"kind": "value", "value": 104}},
             "stop": {"type": "pct", "value": 1}}])
         (t,) = r["trades"]
-        assert t["entry_time"] == ist(2026, 3, 2, 12, 15).isoformat() and t["entry_price"] == pytest.approx(104.5)
-        assert t["exit_time"] == ist(2026, 3, 2, 12, 41).isoformat()          # the minute that dropped through the stop
+        # compared as instants: the same moment prints as +05:30 or +00:00 depending on the database's time zone
+        assert datetime.fromisoformat(t["entry_time"]) == ist(2026, 3, 2, 12, 15) and t["entry_price"] == pytest.approx(104.5)
+        assert datetime.fromisoformat(t["exit_time"]) == ist(2026, 3, 2, 12, 41)          # the minute that dropped through the stop
         assert (t["exit_reason"], t["exit_price"]) == ("stop", pytest.approx(104.5 * 0.99))
 
 

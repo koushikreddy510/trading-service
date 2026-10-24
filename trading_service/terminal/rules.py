@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Mapping, Optional
 
+from sqlalchemy import text
+
 from .conditions import (
     ConditionError,
     referenced_refs,
@@ -217,6 +219,29 @@ def _row_to_rule(r: dict) -> Rule:
     )
 
 
+_SAVE_SQL = """
+INSERT INTO terminal_rules
+    (id, user_id, symbol, timeframe, name, side, condition, stop, target, quantity, enabled, once,
+     trail, exit_condition, exit_timeframe, exit_condition_2, exit_timeframe_2,
+     entry_score_indicator, entry_levels, execution)
+VALUES (:id, :u, :symbol, :tf, :name, :side, CAST(:cond AS JSONB), CAST(:stop AS JSONB),
+        CAST(:target AS JSONB), :qty, :enabled, :once,
+        CAST(:trail AS JSONB), CAST(:exit AS JSONB), :exit_tf,
+        CAST(:exit2 AS JSONB), :exit_tf2,
+        CAST(:esi AS JSONB), CAST(:el AS JSONB), CAST(:exe AS JSONB))
+ON CONFLICT (id) DO UPDATE SET
+    symbol = EXCLUDED.symbol, timeframe = EXCLUDED.timeframe, name = EXCLUDED.name,
+    side = EXCLUDED.side, condition = EXCLUDED.condition, stop = EXCLUDED.stop,
+    target = EXCLUDED.target, quantity = EXCLUDED.quantity, enabled = EXCLUDED.enabled,
+    once = EXCLUDED.once, trail = EXCLUDED.trail, exit_condition = EXCLUDED.exit_condition,
+    exit_timeframe = EXCLUDED.exit_timeframe, exit_condition_2 = EXCLUDED.exit_condition_2,
+    exit_timeframe_2 = EXCLUDED.exit_timeframe_2,
+    entry_score_indicator = EXCLUDED.entry_score_indicator,
+    entry_levels = EXCLUDED.entry_levels, execution = EXCLUDED.execution, updated_at = now()
+WHERE terminal_rules.user_id = EXCLUDED.user_id
+"""
+
+
 class RuleRepo:
     def __init__(self, db: Database, user: str = LOCAL_USER):
         self.db = db
@@ -241,28 +266,17 @@ class RuleRepo:
         return _row_to_rule(r) if r else None
 
     def save(self, rule: Rule) -> Rule:
-        self.db.execute(
-            """
-            INSERT INTO terminal_rules
-                (id, user_id, symbol, timeframe, name, side, condition, stop, target, quantity, enabled, once,
-                 trail, exit_condition, exit_timeframe, exit_condition_2, exit_timeframe_2,
-                 entry_score_indicator, entry_levels, execution)
-            VALUES (:id, :u, :symbol, :tf, :name, :side, CAST(:cond AS JSONB), CAST(:stop AS JSONB),
-                    CAST(:target AS JSONB), :qty, :enabled, :once,
-                    CAST(:trail AS JSONB), CAST(:exit AS JSONB), :exit_tf,
-                    CAST(:exit2 AS JSONB), :exit_tf2,
-                    CAST(:esi AS JSONB), CAST(:el AS JSONB), CAST(:exe AS JSONB))
-            ON CONFLICT (id) DO UPDATE SET
-                symbol = EXCLUDED.symbol, timeframe = EXCLUDED.timeframe, name = EXCLUDED.name,
-                side = EXCLUDED.side, condition = EXCLUDED.condition, stop = EXCLUDED.stop,
-                target = EXCLUDED.target, quantity = EXCLUDED.quantity, enabled = EXCLUDED.enabled,
-                once = EXCLUDED.once, trail = EXCLUDED.trail, exit_condition = EXCLUDED.exit_condition,
-                exit_timeframe = EXCLUDED.exit_timeframe, exit_condition_2 = EXCLUDED.exit_condition_2,
-                exit_timeframe_2 = EXCLUDED.exit_timeframe_2,
-                entry_score_indicator = EXCLUDED.entry_score_indicator,
-                entry_levels = EXCLUDED.entry_levels, execution = EXCLUDED.execution, updated_at = now()
-            WHERE terminal_rules.user_id = EXCLUDED.user_id
-            """,
+        self.db.execute(_SAVE_SQL, **self._params(rule))
+        return rule
+
+    def save_many(self, rules: list[Rule]) -> None:
+        """Insert or update many rules in one transaction (a strategy applying itself to a whole watchlist)."""
+        if rules:
+            with self.db.tx() as conn:
+                conn.execute(text(_SAVE_SQL), [self._params(r) for r in rules])
+
+    def _params(self, rule: Rule) -> dict:
+        return dict(
             id=rule.id, u=self.user, symbol=rule.symbol, tf=rule.timeframe, name=rule.name, side=rule.side,
             cond=jdump(rule.condition), stop=jdump(rule.stop),
             target=jdump(rule.target) if rule.target is not None else None,
@@ -275,7 +289,6 @@ class RuleRepo:
             el=jdump(rule.entry_levels) if rule.entry_levels else None,
             exe=jdump(rule.execution) if rule.execution else None,
         )
-        return rule
 
     def set_enabled(self, rule_id: str, enabled: bool) -> bool:
         return self.db.execute(

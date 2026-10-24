@@ -59,3 +59,25 @@ def test_bad_template_and_missing_watchlist_are_refused(env):
     make(strat, watchlist="Nope")
     with pytest.raises(StrategyError, match="not found"):
         strat.apply(strat.list()[0], rules, wl)
+
+
+def test_apply_all_runs_every_strategy_and_reports_the_one_that_cannot_be_applied(env):
+    strat, rules, wl = env
+    wl.create("Cheap", ["NSE:IDEA-EQ", "NSE:JPPOWER-EQ"])
+    make(strat)
+    make(strat, name="Lost", watchlist="Nope")
+    out = {r["strategy"]: r for r in strat.apply_all(rules, wl)}
+    assert out["Short X"]["added"] == 2 and "not found" in out["Lost"]["error"]
+    assert len(rules.list()) == 2
+
+
+def test_save_many_inserts_and_updates_in_one_go(env):
+    _, rules, _ = env
+    from trading_service.terminal.rules import rule_from_payload
+    a = rule_from_payload({**TEMPLATE, "symbol": "NSE:A-EQ"})
+    b = rule_from_payload({**TEMPLATE, "symbol": "NSE:B-EQ"})
+    rules.save_many([a, b])
+    a.quantity = 77
+    rules.save_many([a])
+    assert {r.symbol: r.quantity for r in rules.list()} == {"NSE:A-EQ": 77, "NSE:B-EQ": 10}
+    rules.save_many([])      # nothing to do is fine

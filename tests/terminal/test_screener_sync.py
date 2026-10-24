@@ -500,8 +500,21 @@ class TestApi:
     def test_refresh_updates_linked_lists(self, client):
         client.post("/terminal/screener-sync/apply", json={"strategy_id": 7, "tolerance_pct": 3})
         client.screener.entries = [stock("NSE:ONLY-EQ", rsi=70, ema=90, matched=True)]
-        res = client.post("/terminal/screener-sync/refresh").json()["results"]
+        body = client.post("/terminal/screener-sync/refresh").json()
+        res = body["results"]
         assert res[0]["ok"] and res[0]["added"] == 1 and res[0]["removed"] == 5
+        assert body["strategies"] == []        # strategies are applied in the same run (none defined here)
+
+    def test_refresh_makes_strategy_rules_follow_the_fresh_list(self, client):
+        wid = client.post("/terminal/screener-sync/apply", json={"strategy_id": 7, "tolerance_pct": 3}).json()["watchlist"]["name"]
+        tpl = {"timeframe": "1H", "side": "BUY", "quantity": 1,
+               "condition": {"type": "compare", "op": ">", "a": {"kind": "close"}, "b": {"kind": "value", "value": 1}},
+               "stop": {"type": "pct", "value": 1}}
+        client.post("/terminal/strategies", json={"name": "S1", "template": tpl, "watchlist": wid})
+        client.post("/terminal/strategies/apply")                          # rules for every symbol of the first list
+        client.screener.entries = [stock("NSE:ONLY-EQ", rsi=70, ema=90, matched=True)]
+        out = client.post("/terminal/screener-sync/refresh").json()["strategies"]
+        assert out[0]["symbols"] == 1 and out[0]["switched_off"] == 5      # the five that left are switched off, not deleted
 
     def test_unlink_keeps_the_list(self, client):
         wid = client.post("/terminal/screener-sync/apply", json={"strategy_id": 7}).json()["watchlist"]["id"]
@@ -564,6 +577,7 @@ def test_exact_matches_only_asks_the_screener_for_matches_only():
     client = FakeScreener([stock("NSE:A-EQ", 65, 90, matched=True), stock("NSE:B-EQ", 50, 90)])
     got, _ = sync.fetch_entries(client, 7, matched_only=True)
     assert [e["symbol"] for e in got] == ["NSE:A-EQ"] and client.calls[-1][1]["matched_only"] == "true"
+    assert client.calls[-1][1]["with_financials"] == "false"      # symbols are all the sync needs: no financials re-read per page
 
 
 def test_per_cap_takes_the_best_n_from_each_size_bucket_and_skips_unknown_caps():

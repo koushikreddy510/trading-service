@@ -41,6 +41,9 @@ def rsi(op, v):
     return {"indicator_type": "rsi", "params": {"length": 14}, "lookback_days": 1, "operator": op, "threshold": {"value": v}}
 
 
+SHORT = {"Dual Supertrend Bullish (5,2 + 10,3)": "ST Bull · 1D", "Dual Supertrend Bearish (5,2 + 10,3)": "ST Bear · 1D",
+         "EMA Golden Cross Momentum": "Golden · 1D", "EMA Death Cross Momentum": "Death · 1D"}   # short list names: the panel is narrow
+
 FILTERS = {
     "Dual Supertrend Bullish (5,2 + 10,3)": ("Both supertrends bullish on the daily candle", [st("bullish", 5, 2.0), st("bullish", 10, 3.0)]),
     "Dual Supertrend Bearish (5,2 + 10,3)": ("Both supertrends bearish on the daily candle", [st("bearish", 5, 2.0), st("bearish", 10, 3.0)]),
@@ -71,7 +74,7 @@ have = {s["name"]: s["id"] for s in call("GET", f"{SCREENER}/strategies/")}
 ids, lists = {}, {}
 for name, (desc, conds) in FILTERS.items():
     ids[name] = have.get(name) or call("POST", f"{SCREENER}/strategies/", {"name": name, "description": desc, "market_type": "stocks", "timeframe": "1D", "conditions": conds})["id"]
-    res = call("POST", f"{TRADING}/terminal/screener-sync/apply", {"strategy_id": ids[name], "tolerance_pct": 0, "max_failing": 0, "per_cap": 40})
+    res = call("POST", f"{TRADING}/terminal/screener-sync/apply", {"strategy_id": ids[name], "tolerance_pct": 0, "max_failing": 0, "per_cap": 25, "name": SHORT[name]})
     lists[name] = res["watchlist"]["name"]     # the name the sync actually used (it keeps an existing list's name)
     print("filter", name, "->", {k: res.get(k) for k in ("watchlist", "matched", "added") if k in res})
 for name, tpl, flt in STRATEGIES:

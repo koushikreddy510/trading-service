@@ -506,14 +506,9 @@ def delete_strategy(request: Request, strategy_id: str):
 
 @router.post("/strategies/apply")
 async def apply_strategies(request: Request):
-    """Bring every enabled-or-disabled strategy's per-symbol rules in line with its watchlist (also run daily by the scheduler)."""
+    """Bring every strategy's per-symbol rules in line with its watchlist (also run after each screener refresh)."""
     t = terminal_of(request)
-    repo, out = StrategyRepo(t.db), []
-    for s in repo.list():
-        try:
-            out.append(repo.apply(s, t.rules, t.watchlists))
-        except (StrategyError, InvalidRule) as e:
-            out.append({"strategy": s["name"], "error": str(e)})
+    out = await asyncio.to_thread(StrategyRepo(t.db).apply_all, t.rules, t.watchlists)
     await t.refresh_background_subscriptions()
     return {"results": out}
 
@@ -839,9 +834,10 @@ async def sync_refresh(request: Request):
     """Re-run every linked list with the settings it was created with (what the daily job does)."""
     t = terminal_of(request)
     results = await asyncio.to_thread(sync.re_sync_all, t.db, t.watchlists, screener_client_of(request))
+    applied = await asyncio.to_thread(StrategyRepo(t.db).apply_all, t.rules, t.watchlists)   # rules follow the fresh lists, same run
     await t.refresh_background_subscriptions()
     t.notifier.sync_refresh(results)
-    return {"results": results}
+    return {"results": results, "strategies": applied}
 
 
 @router.post("/notify/data-digest")
@@ -898,11 +894,12 @@ def _rule_watch(t: Terminal) -> list[dict]:
     from .candles import completed
     from .conditions import EvalContext, explain
     from .drawings import DrawingRepo
-    from .engine import LOOKBACK_BARS
+    from .engine import lookback_bars
     from .timeframes import bucket_end, bucket_start, in_session
 
     now = t.clock()
     drawings_by_symbol: dict[str, dict] = {}
+    bars_memo: dict[tuple, list] = {}
     open_by_rule: dict[str, list] = {}
     for p in t.book.open_positions():
         rid = t.db.scalar("SELECT rule_id FROM terminal_signals WHERE id = :s", s=p.signal_id) if p.signal_id else None
@@ -917,7 +914,11 @@ def _rule_watch(t: Terminal) -> list[dict]:
         live = q.price if q else None
 
         def ctx_for(tf: str):
-            bars = completed(t.candles.candles(rule.symbol, tf, LOOKBACK_BARS), tf, now, rule.symbol)
+            need = lookback_bars(tf, rule.condition, rule.stop, rule.trail, rule.exit_condition, rule.exit_condition_2, rule.entry_score_indicator)
+            key = (rule.symbol, tf, need)
+            if key not in bars_memo:        # eight strategies share a symbol: read its candles once per request
+                bars_memo[key] = completed(t.candles.candles(rule.symbol, tf, need), tf, now, rule.symbol)
+            bars = bars_memo[key]
             return EvalContext(bars, tf, drawings_by_symbol[rule.symbol], ex), bars
 
         try:

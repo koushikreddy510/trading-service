@@ -121,7 +121,7 @@ def fetch_entries(client: Any, strategy_id: int, page_size: int = PAGE_SIZE, max
     total = None
     page = 1
     while page <= max_pages:
-        body = client.get(f"/run/{int(strategy_id)}", page=page, page_size=page_size, matched_only="true" if matched_only else "false")
+        body = client.get(f"/run/{int(strategy_id)}", page=page, page_size=page_size, matched_only="true" if matched_only else "false", with_financials="false")
         if not isinstance(body, dict) or "matches" not in body:
             raise SyncError("strategy-screener /run answered an unexpected shape (no 'matches')")
         batch = body["matches"] or []

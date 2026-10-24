@@ -198,10 +198,17 @@ class Terminal:
     async def _flush_loop(self) -> None:
         while True:
             try:
-                self.flush()
+                await self._flush_once()
             except Exception:
                 log.exception("flush failed")
             await asyncio.sleep(self.flush_interval)
+
+    async def _flush_once(self) -> None:
+        """Same as flush(), but rules are checked one symbol at a time with a pause between: at 09:30 hundreds of
+        symbols close a candle together and checking them in one go would hold up ticks and browsers for seconds."""
+        for close in self.builder.flush(self.clock()):
+            self._on_bar_closed(close)
+            await asyncio.sleep(0)
 
     # --------------------------------------------------------------- subscriptions
     def _rule_symbols(self) -> set[str]:

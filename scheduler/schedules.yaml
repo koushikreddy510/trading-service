@@ -117,14 +117,6 @@ jobs:
     method: POST
     slack: failures   # it posts its own message; a second 'finished' is noise
 
-  - id: strategies_apply
-    name: Strategies -> per-symbol rules (after the screener sync)
-    type: http
-    service: trading
-    schedule: "40 16 * * 1-5"
-    url: /terminal/strategies/apply
-    method: POST
-
   - id: terminal_data_digest
     name: Daily data digest (Slack)
     type: http

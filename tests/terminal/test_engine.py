@@ -234,3 +234,43 @@ class TestEntryScoring:
         got = RuleRepo(db).get(rule.id)
         assert got.entry_score_indicator == self.SCORE_INDICATOR
         assert got.entry_levels == self.ENTRY_LEVELS
+
+
+class TestLookback:
+    """How many candles a rule check reads: a lot only when an indicator needs it (finding: 500 bars of 15m = 30 days of minutes)."""
+
+    def test_daily_and_weekly_keep_the_full_history(self):
+        from trading_service.terminal.engine import lookback_bars
+        assert lookback_bars("1D", {"period": 5}) == 500 and lookback_bars("1W") == 500
+
+    def test_intraday_reads_three_times_the_longest_period_but_never_less_than_150_or_more_than_500(self):
+        from trading_service.terminal.engine import lookback_bars
+        st = {"a": {"kind": "indicator", "name": "supertrend", "params": {"period": 10, "multiplier": 3.0}}}
+        assert lookback_bars("15m", {"type": "cross", "a": {"period": 10}}, None) == 150
+        assert lookback_bars("1H", {"conditions": [{"period": 80}, {"nested": {"slow": 26}}]}) == 240
+        assert lookback_bars("15m", {"period": 200}) == 500      # an SMA 200 on 15m still gets what it needs (capped)
+        assert lookback_bars("4H", st) == 150
+
+
+def test_the_flush_loop_checks_symbols_one_at_a_time_and_lets_the_loop_breathe_between_them():
+    import asyncio
+    from types import SimpleNamespace
+    from trading_service.terminal.runtime import Terminal
+
+    seen: list[str] = []
+
+    async def go():
+        ticker = asyncio.create_task(_count(seen))           # something else on the loop: it must get turns in between
+        fake = SimpleNamespace(builder=SimpleNamespace(flush=lambda now: ["a", "b", "c"]), clock=lambda: None,
+                               _on_bar_closed=lambda c: seen.append(f"closed {c}"))
+        await Terminal._flush_once(fake)                      # type: ignore[arg-type]
+        ticker.cancel()
+
+    async def _count(out):
+        while True:
+            out.append("tick")
+            await asyncio.sleep(0)
+
+    asyncio.run(go())
+    assert [x for x in seen if x != "tick"] == ["closed a", "closed b", "closed c"]
+    assert "tick" in seen[seen.index("closed a"):seen.index("closed b")]       # a turn for others between two symbols
