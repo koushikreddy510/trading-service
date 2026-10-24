@@ -62,7 +62,7 @@ class ScreenerUnavailable(SyncError):
 class ScreenerClient:
     """Minimal HTTP client for the strategy-screener API. Tests swap in a fake with the same `get`."""
 
-    def __init__(self, base_url: Optional[str] = None, timeout: float = 120.0, session: Any = None):
+    def __init__(self, base_url: Optional[str] = None, timeout: float = 600.0, session: Any = None):
         self.base_url = (base_url or os.getenv("STRATEGY_SCREENER_URL") or DEFAULT_URL).rstrip("/")
         self.timeout = timeout
         self._session = session
@@ -113,7 +113,7 @@ def _strategy_summary(s: dict) -> dict:
     }
 
 
-def fetch_entries(client: Any, strategy_id: int, page_size: int = PAGE_SIZE, max_pages: int = MAX_PAGES) -> tuple[list[dict], dict]:
+def fetch_entries(client: Any, strategy_id: int, page_size: int = PAGE_SIZE, max_pages: int = MAX_PAGES, matched_only: bool = False) -> tuple[list[dict], dict]:
     """Every scanned stock (matched or not) of the screener's latest run, paging through /run.
 
     `matched_only=false` is what makes the unmatched stocks, with their indicator values, available."""
@@ -121,7 +121,7 @@ def fetch_entries(client: Any, strategy_id: int, page_size: int = PAGE_SIZE, max
     total = None
     page = 1
     while page <= max_pages:
-        body = client.get(f"/run/{int(strategy_id)}", page=page, page_size=page_size, matched_only="false")
+        body = client.get(f"/run/{int(strategy_id)}", page=page, page_size=page_size, matched_only="true" if matched_only else "false")
         if not isinstance(body, dict) or "matches" not in body:
             raise SyncError("strategy-screener /run answered an unexpected shape (no 'matches')")
         batch = body["matches"] or []
@@ -383,7 +383,8 @@ def build_plan(
         raise SyncError(f"strategy {strategy_id} has no conditions, so it would select every stock")
     if strategy.get("market_type", "stocks") != "stocks":
         raise SyncError(f"strategy {strategy_id} is for {strategy['market_type']}, the terminal watches equities")
-    entries, meta = fetch_entries(client, strategy_id)
+    # Exact matches only (no near-misses wanted): the few matching rows, not all ~3,400 stocks re-enriched on every page.
+    entries, meta = fetch_entries(client, strategy_id, matched_only=(fails == 0 and tol == 0))
 
     found: list[Candidate] = []
     for e in entries:

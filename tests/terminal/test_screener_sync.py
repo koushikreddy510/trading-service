@@ -549,3 +549,9 @@ class TestCli:
         monkeypatch.setattr(cli, "get_db", lambda: db)
         with pytest.raises(SystemExit):
             cli.main(["sync-screener"])
+
+
+def test_exact_matches_only_asks_the_screener_for_matches_only():
+    client = FakeScreener([stock("NSE:A-EQ", 65, 90, matched=True), stock("NSE:B-EQ", 50, 90)])
+    got, _ = sync.fetch_entries(client, 7, matched_only=True)
+    assert [e["symbol"] for e in got] == ["NSE:A-EQ"] and client.calls[-1][1]["matched_only"] == "true"
