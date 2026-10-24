@@ -3,6 +3,7 @@ Central scheduler for trading pipeline.
 Runs all cron-like jobs via HTTP (screener, trading-service) or subprocess (data-store).
 Uses APScheduler with YAML config. Designed for single-EC2 Docker deployment.
 """
+import re
 import html
 import json
 import os
@@ -42,6 +43,18 @@ JOB_SLACK = {}  # job_id -> its own `slack:` setting from schedules.yaml
 RUNS_DB = os.getenv("JOB_RUNS_DB", "/data/job_runs.db")  # run history; a docker volume keeps it across restarts and deploys
 RUNS_KEEP = 2000                                         # newest rows kept; older ones are deleted on write
 
+
+
+_DAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
+
+
+def cron_weekdays(field: str) -> str:
+    """The weekday field of a normal cron line, written for APScheduler.
+
+    In cron 0 is Sunday and 1 is Monday; APScheduler counts 0 as Monday, so a plain "1-5" would run Tuesday to
+    Saturday (the Saturday 07:45 login that gave this away, and no Monday login). Digits become day names; a step
+    such as */2 and names written out are left alone."""
+    return re.sub(r"(?<![/\d])\d", lambda m: _DAYS[int(m.group()) % 7], field)
 
 def _slack(text: str) -> None:
     """Best effort: a Slack outage must never affect a job."""
@@ -204,7 +217,7 @@ def _register_jobs(config: dict):
             hour=parts[1],
             day=parts[2],
             month=parts[3],
-            day_of_week=parts[4],
+            day_of_week=cron_weekdays(parts[4]),
             timezone=tz,
         )
 
